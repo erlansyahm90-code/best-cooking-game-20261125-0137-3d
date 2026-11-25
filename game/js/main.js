@@ -11,6 +11,7 @@ import { PASSENGERS, makeOrder, tickOrders, servePayout, patienceFrac, patienceC
 import { makeCountdown, tickCountdown, fmtTime, makeAction, tickAction, actionFrac, PERFECT_LOW, PERFECT_HIGH } from './timer.js';
 import { STATIONS, PASSENGER_SPOTS, stationById, nearestStation, clampFloor, burnerSlots, plateSlots } from './stations.js';
 import { makeChef, moveChef, giveItem, takeItem, findCarried, freeHand, handCount } from './chef.js';
+import { makeWaiter, waiterSpeed, pickWaiterJob, moveToward, WAITER_HOME, WAITER_PICKUP } from './waiter.js';
 import { SoundBank } from './audio.js';
 
 const W = 1280, H = 720;
@@ -37,9 +38,10 @@ function freshState() {
     orders: [], spots: [null, null, null, null], orderTimer: 6,
     burners: [], chopping: null, boardPieces: [],
     plates: [], readyPlates: [], warmingItems: [],
-    upgrades: { knife: 0, stove: 0, plating: 0, window: 0, shoes: 0, pantry: 0, quality: 0, warming: 0 },
+    upgrades: { knife: 0, stove: 0, plating: 0, window: 0, shoes: 0, pantry: 0, quality: 0, warming: 0, waiter: 0 },
     stats: effectiveStats({}),
     sousChef: false, sousChefReady: false,
+    waiters: [],
     teaCooldown: 0, teaUsed: 0,
     particles: [], floaters: [],
     pantryItems: [], pantryHighlight: null,
@@ -65,13 +67,20 @@ function levelParams() { return levelDef(S.level); }
 function plateSlotCount() { return S.stats.plating.plateSlots; }
 function burnerCount() { return S.stats.stove.burners; }
 function syncBurners() {
-  while (S.burners.length < burnerCount()) S.burners.push({ state: 'empty', ing: null, progress: 0, duration: 8, perfect: false });
+  while (S.burners.length < burnerCount()) S.burners.push({ state: 'empty', ing: null, progress: 0, duration: 8, perfect: false, perfectDinged: false });
   while (S.burners.length > burnerCount()) {
     const b = S.burners.pop();
     if (b.state !== 'empty') S.burners.push(b);
   }
 }
 function syncStats() { S.stats = effectiveStats(S.upgrades); }
+// Match the waiter crew to the waiter upgrade tier (1 waiter at tier 1-2,
+// 2 waiters at tier 3). New waiters start at their home spot.
+function syncWaiters() {
+  const want = (S.stats.waiter && S.stats.waiter.waiters) || 0;
+  while (S.waiters.length < want) S.waiters.push(makeWaiter(WAITER_HOME, S.waiters.length));
+  while (S.waiters.length > want) S.waiters.pop();
+}
 function floater(x, y, text, color) {
   S.floaters.push({ x, y, text, color: color || '#ffd700', life: 1.4 });
 }
@@ -85,6 +94,7 @@ function addSteam(x, y, z) {
 // ---------- level lifecycle ----------
 function startLevel(n) {
   S.level = n;
+  sound.setMusicLevel(n); // melody + tempo follow the shift (Rush Hour is faster)
   const L = levelDef(n);
   S.levelTime = L.duration;
   S.coins = 0; S.combo = 0; S.serves = 0; S.failed = 0;
@@ -102,6 +112,7 @@ function startLevel(n) {
 function newGame() {
   S = freshState();
   S.stats = effectiveStats(S.upgrades);
+  sound.stopSizzle(); // fresh kitchen, no burners cooking
   startLevel(1);
   sound.startMusic();
 }
@@ -190,13 +201,13 @@ function interact() {
       if (doneIdx >= 0) {
         const b = S.burners[doneIdx];
         if (b.state === 'burnt') {
-          S.burners[doneIdx] = { state: 'empty', ing: null, progress: 0, duration: 8, perfect: false };
+          S.burners[doneIdx] = { state: 'empty', ing: null, progress: 0, duration: 8, perfect: false, perfectDinged: false };
           sound.fail();
           floater(...chefScreenPos(), 'Gosong! Dibuang', '#ff9a9a');
         } else {
           const perfect = b.progress >= PERFECT_LOW && b.progress <= PERFECT_HIGH;
           giveItem(chef, { ing: b.ing, chopped: b.chopped, cooked: true, perfect });
-          S.burners[doneIdx] = { state: 'empty', ing: null, progress: 0, duration: 8, perfect: false };
+          S.burners[doneIdx] = { state: 'empty', ing: null, progress: 0, duration: 8, perfect: false, perfectDinged: false };
           sound.pickup();
           if (perfect) floater(...chefScreenPos(), 'PERFECT!', '#7dff8a');
         }
@@ -212,8 +223,8 @@ function interact() {
     const item = takeItem(chef, idx);
     const recipe = RECIPES.find((r) => r.components.some((c) => c.ing === item.ing && c.cookTime));
     const dur = (recipe ? (recipe.components.find((c) => c.ing === item.ing) || {}).cookTime : 8) || 8;
-    S.burners[free] = { state: 'cooking', ing: item.ing, chopped: item.chopped, progress: 0, duration: dur * S.stats.stove.cookMult, perfect: false };
-    sound.sizzle();
+    S.burners[free] = { state: 'cooking', ing: item.ing, chopped: item.chopped, progress: 0, duration: dur * S.stats.stove.cookMult, perfect: false, perfectDinged: false };
+    sound.startSizzle(); // the loop keeps going until the pot leaves (see update())
     return;
   }
   if (st.id === 'plating') {
@@ -297,7 +308,8 @@ function serveReady() {
   const waiting = S.orders.filter((o) => o.state === 'waiting')
     .sort((a, b) => (a.patience / a.patienceMax) - (b.patience / b.patienceMax));
   for (const o of waiting) {
-    const di = S.readyPlates.findIndex((d) => d.recipeId === o.recipeId);
+    // Skip plates a waiter already claimed — the waiter is bringing it.
+    const di = S.readyPlates.findIndex((d) => d.recipeId === o.recipeId && !d.claimed);
     if (di < 0) continue;
     const dish = S.readyPlates[di];
     S.readyPlates.splice(di, 1);
@@ -335,6 +347,35 @@ function pickIngredient(ing) {
   sound.pickup();
 }
 
+// Shared serve payout: a chef serve and a waiter delivery both land
+// here — same coins, combo, sous-chef progress, joy and floaters.
+function completeServe(order, dish) {
+  // Accepts 'waiting' (waiter delivery) and 'serving' (chef serve sets
+  // this when the plate starts flying); rejects failed/already-served.
+  if (!order || (order.state !== 'waiting' && order.state !== 'serving') || !dish) return;
+  const payout = servePayout(order, {
+    tipMult: S.stats.window.tipMult,
+    qualityTip: S.stats.quality.qualityTip,
+    perfectBonus: dish.perfect ? S.stats.quality.perfectBonus : 0,
+    combo: S.combo,
+  });
+  S.coins += payout.coins;
+  S.combo += 1;
+  S.serves += 1;
+  if (S.serves % 3 === 0) { S.sousChef = true; S.sousChefReady = true; }
+  resolveOrder(order, 'served');
+  sound.coin();
+  sound.bell();
+  S.passengerJoy = { spot: order.spot, t: 0.9 };
+  const spot = PASSENGER_SPOTS[order.spot];
+  const [jx, jy] = projectToScreen(vp, spot.x + 0.55, 2.7, spot.z, W, H);
+  floater(jx, jy, '😋 Yum! +' + payout.coins, '#7dff8a');
+  if (payout.breakdown.perfect) floater(jx, jy - 26, 'PERFECT +' + payout.breakdown.perfect, '#7dff8a');
+  for (let i = 0; i < 8; i++) {
+    S.particles.push({ x: spot.x + (Math.random() - 0.5), y: 1.6, z: spot.z + (Math.random() - 0.5), r: 0.08, vy: 0.8, life: 0.9 });
+  }
+}
+
 // ---------- update ----------
 function update(dt) {
   S.time += dt;
@@ -365,9 +406,18 @@ function update(dt) {
     if (b.state === 'cooking') {
       b.progress += dt / b.duration;
       if (Math.random() < dt * (2 + b.progress * 10)) addSteam(0.1 + (S.burners.indexOf(b) - 0.5) * 1.1, 1.6, -3.2);
+      // Entering the perfect zone dings once — "matang!" you can hear.
+      if (!b.perfectDinged && b.progress >= PERFECT_LOW && b.progress < 1) {
+        b.perfectDinged = true;
+        sound.ding();
+      }
       if (b.progress >= 1) { b.state = 'burnt'; sound.fail(); }
     }
   }
+  // Sizzle loops exactly while food is on the stove (and stops when the
+  // last pot leaves the burner or burns). Idempotent — cheap per frame.
+  if (S.burners.some((b) => b.state === 'cooking')) sound.startSizzle();
+  else sound.stopSizzle();
   // Serve delivery animation: the plate flies to the passenger, who eats
   // happily; coins land only when the plate arrives.
   if (S.serveAnim) {
@@ -375,29 +425,83 @@ function update(dt) {
     if (S.serveAnim.t >= S.serveAnim.dur) {
       const anim = S.serveAnim;
       S.serveAnim = null;
-      const o = anim.order;
-      const payout = servePayout(o, {
-        tipMult: S.stats.window.tipMult,
-        qualityTip: S.stats.quality.qualityTip,
-        perfectBonus: anim.dish.perfect ? S.stats.quality.perfectBonus : 0,
-        combo: S.combo,
-      });
-      S.coins += payout.coins;
-      S.combo += 1;
-      S.serves += 1;
-      if (S.serves % 3 === 0) { S.sousChef = true; S.sousChefReady = true; }
-      resolveOrder(o, 'served');
-      sound.coin();
-      sound.bell();
-      S.passengerJoy = { spot: o.spot, t: 0.9 };
-      const spot = PASSENGER_SPOTS[o.spot];
-      const [jx, jy] = projectToScreen(vp, spot.x + 0.55, 2.7, spot.z, W, H);
-      floater(jx, jy, '😋 Yum! +' + payout.coins, '#7dff8a');
-      if (payout.breakdown.perfect) floater(jx, jy - 26, 'PERFECT +' + payout.breakdown.perfect, '#7dff8a');
-      for (let i = 0; i < 8; i++) {
-        S.particles.push({ x: spot.x + (Math.random() - 0.5), y: 1.6, z: spot.z + (Math.random() - 0.5), r: 0.08, vy: 0.8, life: 0.9 });
-      }
+      completeServe(anim.order, anim.dish);
     }
+  }
+  // Waiters (Pelayan upgrade): idle -> walk to the serving window, pick
+  // the claimed plate up -> walk to the passenger's counter front ->
+  // plate flies (0.9s, same arc) -> coins land -> walk home. If the
+  // order is gone when they arrive, the dish goes back on the counter.
+  for (const w of S.waiters) {
+    const speed = waiterSpeed(S.stats);
+    if (w.state === 'idle') {
+      const job = pickWaiterJob(S.readyPlates, S.orders);
+      if (job) {
+        const dish = S.readyPlates[job.dishIndex];
+        dish.claimed = true;
+        w.dish = dish;
+        w.order = job.order;
+        w.state = 'toPickup';
+      }
+      w.moving = false;
+    } else if (w.state === 'toPickup') {
+      const r = moveToward(w.x, w.z, WAITER_PICKUP[0], WAITER_PICKUP[1], speed, dt);
+      w.x = r.x; w.z = r.z;
+      w.moving = !r.arrived;
+      w.bob += dt * 10;
+      w.facing = Math.atan2(WAITER_PICKUP[0] - w.x, WAITER_PICKUP[1] - w.z);
+      if (r.arrived) {
+        const di = S.readyPlates.indexOf(w.dish);
+        if (di < 0 || !w.order || w.order.state !== 'waiting') {
+          if (w.dish) w.dish.claimed = false;
+          w.dish = null; w.order = null; w.state = 'returning';
+        } else {
+          S.readyPlates.splice(di, 1);
+          w.carrying = w.dish;
+          w.dish = null;
+          w.t = 0.35; // pick the plate up
+          w.state = 'pickup';
+        }
+      }
+    } else if (w.state === 'pickup') {
+      w.t -= dt;
+      if (w.t <= 0) w.state = 'toPassenger';
+    } else if (w.state === 'toPassenger') {
+      if (!w.order || w.order.state !== 'waiting') {
+        if (w.carrying) { w.carrying.claimed = false; S.readyPlates.push(w.carrying); w.carrying = null; }
+        w.order = null; w.state = 'returning';
+      } else {
+        const spot = PASSENGER_SPOTS[w.order.spot];
+        const tx = spot.x + 1.4, tz = spot.z; // counter front
+        const r = moveToward(w.x, w.z, tx, tz, speed, dt);
+        w.x = r.x; w.z = r.z;
+        w.moving = !r.arrived;
+        w.bob += dt * 10;
+        w.facing = Math.atan2(tx - w.x, tz - w.z);
+        if (r.arrived) {
+          w.anim = { t: 0, dur: 0.9, dish: w.carrying, order: w.order, from: { x: w.x, z: w.z }, to: { x: spot.x, z: spot.z } };
+          w.state = 'delivering';
+        }
+      }
+    } else if (w.state === 'delivering') {
+      w.anim.t += dt;
+      if (w.anim.t >= w.anim.dur) {
+        const dish = w.carrying, order = w.order;
+        w.anim = null; w.carrying = null; w.order = null;
+        completeServe(order, dish);
+        w.state = 'returning';
+      }
+    } else if (w.state === 'returning') {
+      const r = moveToward(w.x, w.z, w.home[0], w.home[1], speed, dt);
+      w.x = r.x; w.z = r.z;
+      w.moving = !r.arrived;
+      w.bob += dt * 10;
+      w.facing = Math.atan2(w.home[0] - w.x, w.home[1] - w.z);
+      if (r.arrived) { w.state = 'idle'; w.moving = false; }
+    }
+    // Keep waiters out of the furniture (serving counter, prep table).
+    const [wx, wz] = clampFloor(w.x, w.z);
+    w.x = wx; w.z = wz;
   }
   if (S.passengerJoy) {
     S.passengerJoy.t -= dt;
@@ -618,7 +722,11 @@ function drawWorldBars() {
       if (!behind) text('😋 Yum!', px, py, 20, '#7dff8a', 'center', true);
     }
   }
-  // Passenger patience + ticket above heads.
+  // Passenger patience + ticket above heads. A dark pill behind the
+  // recipe name keeps it readable over the counter and the legend.
+  // (No "⚡ EXPRESS" text here: the gold box on the 3D ticket and the
+  // top ticket already say it — the text only collided with the next
+  // passenger's label.)
   const waiting = S.orders.filter((o) => o.state === 'waiting');
   for (const o of waiting) {
     const spot = PASSENGER_SPOTS[o.spot];
@@ -627,9 +735,11 @@ function drawWorldBars() {
     if (behind) continue;
     const pc = patienceColor(o);
     const css = 'rgb(' + Math.round(pc[0] * 255) + ',' + Math.round(pc[1] * 255) + ',' + Math.round(pc[2] * 255) + ')';
+    hctx.fillStyle = 'rgba(10,10,16,0.75)';
+    const tw = 84;
+    rr(px - tw / 2, py - 26, tw, 18, 9); hctx.fill();
     bar(px - 42, py, 84, 9, patienceFrac(o), css);
-    text(o.recipeName, px, py - 14, 12, '#fff', 'center', true);
-    if (o.express) text('⚡ EXPRESS', px, py + 22, 11, '#ffd700', 'center', true);
+    text(o.recipeName, px, py - 17, 12, '#fff', 'center', true);
   }
   // Nearest station hint (drawn below the station so it never covers
   // pot labels or coin floaters above it).
@@ -696,25 +806,28 @@ function drawShop() {
   hctx.fillStyle = 'rgba(0,0,0,0.72)';
   hctx.fillRect(0, 0, W, H);
   const pw = 980, ph = 600, px = (W - pw) / 2, py = (H - ph) / 2;
+  S._shopPanel = { x: px, y: py, w: pw, h: ph };
   hctx.fillStyle = '#181a24';
   rr(px, py, pw, ph, 16); hctx.fill();
   hctx.strokeStyle = '#c9a227'; hctx.lineWidth = 3;
   rr(px, py, pw, ph, 16); hctx.stroke();
-  text('🛒 TOKO UPGRADE — koin: ' + S.coins, px + pw / 2, py + 32, 22, '#ffd700', 'center', true);
+  text('🛒 TOKO UPGRADE — 9 upgrade • koin: ' + S.coins, px + pw / 2, py + 32, 22, '#ffd700', 'center', true);
   S._shopBtns = [];
   UPGRADES.forEach((u, i) => {
-    const y = py + 62 + i * 56;
+    // 9 rows: pitch 50, height 44 — last row ends at py+502, the
+    // continue button sits at py+544.
+    const y = py + 58 + i * 50;
     const tier = S.upgrades[u.id] || 0;
     hctx.fillStyle = 'rgba(255,255,255,0.06)';
-    rr(px + 24, y, pw - 48, 48, 10); hctx.fill();
-    text(u.icon + ' ' + u.name, px + 44, y + 14, 16, '#fff', 'left', true);
-    text(u.desc, px + 44, y + 34, 12, '#aaa');
+    rr(px + 24, y, pw - 48, 44, 10); hctx.fill();
+    text(u.icon + ' ' + u.name, px + 44, y + 13, 16, '#fff', 'left', true);
+    text(u.desc, px + 44, y + 31, 12, '#aaa');
     // Tier pips.
     for (let t = 0; t < 3; t++) {
       const tx2 = px + 560 + t * 34;
       hctx.fillStyle = t < tier ? '#ffd700' : '#333';
-      hctx.beginPath(); hctx.arc(tx2, y + 24, 11, 0, Math.PI * 2); hctx.fill();
-      text(String(t + 1), tx2, y + 24, 11, t < tier ? '#111' : '#888', 'center', true);
+      hctx.beginPath(); hctx.arc(tx2, y + 22, 11, 0, Math.PI * 2); hctx.fill();
+      text(String(t + 1), tx2, y + 22, 11, t < tier ? '#111' : '#888', 'center', true);
     }
     if (tier < 3) {
       const cost = u.tiers[tier].price;
@@ -723,11 +836,11 @@ function drawShop() {
       const afford = S.coins >= cost;
       const bx = px + pw - 190, bw = 160;
       hctx.fillStyle = locked ? '#333' : afford ? '#2f7a3d' : '#5a3a3a';
-      rr(bx, y + 8, bw, 32, 8); hctx.fill();
-      text(locked ? '🔒 LV' + lockLv : 'Beli ' + cost + ' 🪙', bx + bw / 2, y + 24, 14, '#fff', 'center', true);
-      if (!locked) S._shopBtns.push({ x: bx, y: y + 8, w: bw, h: 32, id: u.id, tier, cost });
+      rr(bx, y + 6, bw, 32, 8); hctx.fill();
+      text(locked ? '🔒 LV' + lockLv : 'Beli ' + cost + ' 🪙', bx + bw / 2, y + 22, 14, '#fff', 'center', true);
+      if (!locked) S._shopBtns.push({ x: bx, y: y + 6, w: bw, h: 32, id: u.id, tier, cost });
     } else {
-      text('MAX', px + pw - 110, y + 24, 15, '#ffd700', 'center', true);
+      text('MAX', px + pw - 110, y + 22, 15, '#ffd700', 'center', true);
     }
   });
   // Continue button.
@@ -748,7 +861,7 @@ function drawTitle() {
   hctx.globalAlpha = pulse;
   text('▶  TEKAN ENTER / KLIK UNTUK MULAI  ◀', W / 2, 420, 26, '#7dff8a', 'center', true);
   hctx.globalAlpha = 1;
-  text('5 shift • 7 resep • 8 upgrade • Express Train', W / 2, 470, 16, '#aaa', 'center');
+  text('5 shift • 7 resep • 9 upgrade • Express Train', W / 2, 470, 16, '#aaa', 'center');
 }
 function drawLevelUp() {
   hctx.fillStyle = 'rgba(0,0,0,0.7)';
@@ -781,9 +894,9 @@ function drawAnnotations() {
   const items = [
     { label: '1. Dapur 3D', at: [0, 1.2, -3.2] },
     { label: '2. Order board', at: [0, 3.3, -4.4] },
-    { label: '3. Bahan di counter', at: [-5.3, 1.6, -3.2] },
+    { label: '3. Bahan di counter', at: [-2.7, 1.6, -3.2] }, // chopping board (was the pantry: it sat on top of the spot-0 passenger label)
     { label: '4. Hidangan mid-assembly', at: [3.0, 1.6, -3.2] },
-    { label: '5. Timer & patience', at: [-5.4, 2.5, -1.4] },
+    { label: '5. Timer & patience', at: [-5.3, 1.35, -1.6] },
     { label: '6. Piring siap saji', at: [5.6, 1.4, -2.0] },
   ];
   hctx.fillStyle = 'rgba(10,10,16,0.85)';
@@ -852,10 +965,45 @@ function applyScene(name) {
       recipeId: r.id, recipeName: r.name, color: r.color, perfect: false, complete: false,
       components: r.components.map((c, i) => ({ ing: c.ing, done: i < 2 })),
     });
-    S.readyPlates.push({ recipeId: 'signal-sandwich', recipeName: 'Signal Sandwich', color: [0.85, 0.62, 0.30] });
+    S.readyPlates.push({ recipeId: 'express-fries', recipeName: recipeById('express-fries').name, color: recipeById('express-fries').color });
     S.sousChef = true;
-    S.upgrades.warming = 1; syncStats(); syncBurners();
+    // A plate is mid-flight to the VIP passenger AT the counter — the
+    // passenger receives the dish right where they waited (ticket +
+    // patience bar above their head, "😋 Yum!" on arrival). The order
+    // stays 'waiting' in this staged frame so the passenger keeps
+    // standing at the counter; the flight is frozen, see below.
+    const vipSpot = PASSENGER_SPOTS[S.orders[2].spot];
+    S.serveAnim = { t: 0.675, dur: 0.9, dish: { recipeId: 'signal-sandwich', recipeName: 'Signal Sandwich', color: recipeById('signal-sandwich').color, perfect: true }, order: S.orders[2], from: { x: 5.6, z: -2.0 }, to: { x: vipSpot.x, z: vipSpot.z } };
+    // (No passengerJoy here: the "😋 Yum!" text landed on top of the
+    // Signal Sandwich label. The flying plate + the ticket tell the
+    // serve story on their own.)
+    // Show the upgrade system on the stations: 3 burners, gold window
+    // trim, boots, tier pips — plus a waiter standing by the window.
+    // (The ready plate is express-fries, which no waiting order wants,
+    // so the waiter stays at his post instead of walking off mid-shot.)
+    S.upgrades = { knife: 2, stove: 3, plating: 2, window: 2, shoes: 1, pantry: 1, quality: 1, warming: 1, waiter: 1 };
+    syncStats(); syncBurners(); syncWaiters();
     S.warmingItems.push({ ing: 'patty', chopped: false, cooked: true, perfect: true });
+    // Staged steam over the pots + sparkles around the flying plate
+    // (frozen scene: particles stay put and read as steam/shine).
+    for (let i = 0; i < 4; i++) {
+      S.particles.push({ x: -0.45 + (Math.random() - 0.5) * 0.3, y: 1.7 + i * 0.22, z: -3.2 + (Math.random() - 0.5) * 0.2, r: 0.09, vy: 0, life: 99 });
+      S.particles.push({ x: 0.65 + (Math.random() - 0.5) * 0.3, y: 1.7 + i * 0.22, z: -3.2 + (Math.random() - 0.5) * 0.2, r: 0.08, vy: 0, life: 99 });
+    }
+    for (let i = 0; i < 5; i++) {
+      S.particles.push({ x: -3.1 + (Math.random() - 0.5) * 0.9, y: 2.2 + (Math.random() - 0.5) * 0.5, z: 0.4 + (Math.random() - 0.5) * 0.5, r: 0.06, vy: 0, life: 99 });
+    }
+    S.time = 12.34;
+  } else if (name === 'shop') {
+    // The upgrade shop, open: all 9 upgrades with tiers, prices and
+    // pips over a live kitchen behind it.
+    newGameSilent(3);
+    S.coins = 300;
+    S.upgrades = { knife: 2, stove: 3, plating: 2, window: 2, shoes: 1, pantry: 1, quality: 1, warming: 1, waiter: 1 };
+    syncStats(); syncBurners(); syncWaiters();
+    spawnOrder({ recipeId: 'station-burger', passenger: 'santai' });
+    S.chef.x = 1.6; S.chef.z = -1.2; S.chef.facing = Math.PI * 0.75;
+    S.screen = 'shop';
     S.time = 12.34;
   } else if (name === 'chop') {
     newGameSilent(1);
@@ -865,6 +1013,10 @@ function applyScene(name) {
     S.chopping = { ing: 'lettuce', progress: 0.55, hand: 0 };
     S.action = { type: 'chop', duration: 2, t: 1.1, world: { x: -2.7, y: 1.9, z: -3.2 }, onDone: null, label: 'Chopping' };
     S.boardPieces = ['tomato', 'carrot'];
+    // Chop sparks flying off the board.
+    for (let i = 0; i < 6; i++) {
+      S.particles.push({ x: -2.7 + (Math.random() - 0.5) * 0.7, y: 1.3 + Math.random() * 0.3, z: -3.2 + (Math.random() - 0.5) * 0.4, r: 0.06, vy: 0, life: 99 });
+    }
     S.time = 8.1;
   } else if (name === 'stove') {
     newGameSilent(2);
@@ -875,6 +1027,11 @@ function applyScene(name) {
     S.burners[1] = { state: 'cooking', ing: 'potato', chopped: true, progress: 0.9, duration: 7, perfect: false };
     S.chef.x = 0.6; S.chef.z = -1.6; S.chef.facing = Math.PI;
     S.levelTime = 34;
+    // Steam over both pots (one in the perfect zone, one nearly burnt).
+    for (let i = 0; i < 4; i++) {
+      S.particles.push({ x: -0.45 + (Math.random() - 0.5) * 0.3, y: 1.7 + i * 0.22, z: -3.2 + (Math.random() - 0.5) * 0.2, r: 0.09, vy: 0, life: 99 });
+      S.particles.push({ x: 0.65 + (Math.random() - 0.5) * 0.3, y: 1.7 + i * 0.22, z: -3.2 + (Math.random() - 0.5) * 0.2, r: 0.08, vy: 0, life: 99 });
+    }
     S.time = 21.7;
   } else if (name === 'serve') {
     newGameSilent(3);
@@ -886,6 +1043,10 @@ function applyScene(name) {
     S.floaters.push({ x: 900, y: 300, text: 'PERFECT!', color: '#7dff8a', life: 1.4 });
     S.time = 30.2;
   }
+  // Staged shots are deterministic: freeze the clock so the chop stays
+  // mid-chop, the pots stay in the perfect zone, and the serve plate
+  // stays mid-flight instead of landing before the screenshot.
+  S.frozen = true;
 }
 function newGameSilent(level) {
   S = freshState();
@@ -900,12 +1061,12 @@ window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   keys[k] = true;
   if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
-  if (S.screen === 'title' && (k === 'enter' || k === ' ')) { newGame(); return; }
-  if (S.screen === 'gameover' && k === 'r') { newGame(); return; }
+  if (S.screen === 'title' && (k === 'enter' || k === ' ')) { sound.click(); newGame(); return; }
+  if (S.screen === 'gameover' && k === 'r') { sound.click(); newGame(); return; }
   if (S.screen !== 'playing') return;
   if (k === 'escape') {
-    if (S.pantryOpen) S.pantryOpen = false;
-    else if (S.showBook) S.showBook = false;
+    if (S.pantryOpen) { S.pantryOpen = false; sound.click(); }
+    else if (S.showBook) { S.showBook = false; sound.click(); }
     return;
   }
   if (S.pantryOpen) {
@@ -923,11 +1084,11 @@ window.addEventListener('keydown', (e) => {
       sound.fail();
     }
   }
-  if (k === 't') useTea();
-  if (k === 'b') S.showBook = !S.showBook;
-  if (k === 'u' && S.screen === 'playing') { S.screen = 'shop'; }
-  if (k === 'p') S.paused = !S.paused;
-  if (k === 'm') sound.setMuted(!sound.muted);
+  if (k === 't') useTea(); // ding on success is its feedback
+  if (k === 'b') { S.showBook = !S.showBook; sound.click(); }
+  if (k === 'u' && S.screen === 'playing') { S.screen = 'shop'; sound.click(); }
+  if (k === 'p') { S.paused = !S.paused; sound.click(); }
+  if (k === 'm') { sound.setMuted(!sound.muted); sound.click(); } // click after unmute: audible confirmation
 });
 window.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
 
@@ -973,37 +1134,42 @@ function hitRect(x, y, r) {
 hudCanvas.addEventListener('click', (e) => {
   const [x, y] = canvasPos(e);
   sound.ensure();
-  if (S.screen === 'title') { newGame(); return; }
+  if (S.screen === 'title') { sound.click(); newGame(); return; }
   if (S.screen === 'levelup') {
-    if (hitRect(x, y, S._levelUpBtn)) S.screen = 'shop';
+    if (hitRect(x, y, S._levelUpBtn)) { S.screen = 'shop'; sound.click(); }
+    else sound.clickInvalid();
     return;
   }
   if (S.screen === 'shop') {
-    if (hitRect(x, y, S._shopContinue)) { nextAfterShop(); return; }
+    if (hitRect(x, y, S._shopContinue)) { sound.click(); nextAfterShop(); return; }
     for (const b of S._shopBtns || []) {
       if (hitRect(x, y, b)) {
         const chk = canBuy(b.id, b.tier, S.level, S.coins);
         if (chk.ok) {
           S.coins -= chk.cost;
           S.upgrades[b.id] = b.tier + 1;
-          syncStats(); syncBurners();
-          sound.coin();
+          syncStats(); syncBurners(); syncWaiters();
+          sound.coin(); // the buy sound — no extra click (no double sound)
+        } else {
+          sound.clickInvalid();
         }
         return;
       }
     }
+    if (hitRect(x, y, S._shopPanel)) sound.clickInvalid();
     return;
   }
-  if (S.screen === 'gameover') { newGame(); return; }
+  if (S.screen === 'gameover') { sound.click(); newGame(); return; }
   if (S.screen !== 'playing') return;
   if (S.pantryOpen) {
     for (const b of S._pantryBtns || []) {
-      if (hitRect(x, y, b)) { pickIngredient(b.ing); return; }
+      if (hitRect(x, y, b)) { pickIngredient(b.ing); return; } // pickup() is its feedback
     }
     S.pantryOpen = false;
+    sound.click();
     return;
   }
-  if (S.showBook) { S.showBook = false; return; }
+  if (S.showBook) { S.showBook = false; sound.click(); return; }
   // Click a filled hand slot to discard that item (wrong pick? throw it).
   for (const r of S._handRects || []) {
     if (hitRect(x, y, r) && S.chef.hands[r.idx]) {
@@ -1015,16 +1181,17 @@ hudCanvas.addEventListener('click', (e) => {
   }
   for (const b of S._buttons || []) {
     if (hitRect(x, y, b)) {
-      if (b.id === 'book') S.showBook = !S.showBook;
-      if (b.id === 'shop') S.screen = 'shop';
-      if (b.id === 'tea') useTea();
-      if (b.id === 'pause') S.paused = !S.paused;
+      if (b.id === 'book') { S.showBook = !S.showBook; sound.click(); }
+      if (b.id === 'shop') { S.screen = 'shop'; sound.click(); }
+      if (b.id === 'tea') useTea(); // ding on success is its feedback
+      if (b.id === 'pause') { S.paused = !S.paused; sound.click(); }
       return;
     }
   }
   // Click a station: walk there, then interact.
   const pt = screenToFloor(x, y);
   if (pt) {
+    sound.click();
     const [wx, wz] = clampFloor(pt[0], pt[1]);
     const st = nearestStation(wx, wz, 2.4);
     if (st) {
@@ -1084,4 +1251,5 @@ window.JK = {
   setChef(x, z) { S.chef.x = x; S.chef.z = z; },
   setRealtime(v) { S.realtime = !!v; },
   syncStats,
+  syncWaiters,
 };

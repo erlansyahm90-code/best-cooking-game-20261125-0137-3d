@@ -83,6 +83,16 @@ export const UPGRADES = [
     ],
     base: { warmingSlots: 0 },
   },
+  {
+    id: 'waiter', name: 'Pelayan', icon: '🤵',
+    desc: 'Pelayan antar hidangan siap ke penumpang. Tier 2: jalan 50% lebih cepat. Tier 3: 2 pelayan.',
+    tiers: [
+      { price: 50, waiters: 1, speedMult: 1.0 },
+      { price: 100, waiters: 1, speedMult: 1.5 },
+      { price: 160, waiters: 2, speedMult: 1.5 },
+    ],
+    base: { waiters: 0, speedMult: 1.0 },
+  },
 ];
 
 // Tier 2 needs level 2, tier 3 needs level 4.

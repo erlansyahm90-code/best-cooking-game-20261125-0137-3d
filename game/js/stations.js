@@ -43,6 +43,21 @@ export const STATIONS = [
   },
 ];
 
+// ---------- new furniture (added so the kitchen reads as a real kitchen) ----------
+// Serving counter on the LEFT platform: passengers wait behind it with
+// their ticket (Cooking Dash layout). Prep table in the middle fills the
+// empty floor. Both are solid: the chef and the waiter walk around them.
+export const SERVING_COUNTER = { x: -5.3, z: 0.65, w: 1.0, d: 4.5 };
+export const PREP_TABLE = { x: 0, z: 2.3, w: 2.6, d: 1.0 };
+// Solid rectangles [xMin, zMin, xMax, zMax] used by clampFloor.
+export const OBSTACLES = [
+  [SERVING_COUNTER.x - SERVING_COUNTER.w / 2, SERVING_COUNTER.z - SERVING_COUNTER.d / 2,
+   SERVING_COUNTER.x + SERVING_COUNTER.w / 2, SERVING_COUNTER.z + SERVING_COUNTER.d / 2],
+  [PREP_TABLE.x - PREP_TABLE.w / 2, PREP_TABLE.z - PREP_TABLE.d / 2,
+   PREP_TABLE.x + PREP_TABLE.w / 2, PREP_TABLE.z + PREP_TABLE.d / 2],
+  [-6.65, -0.65, -6.05, 1.65], // waiting bench
+];
+
 // Passenger platform (Cooking Dash layout lesson: customers wait at a
 // counter with their ticket + patience meter above their heads).
 // The platform runs down the LEFT side; each waiting order gets one
@@ -84,10 +99,20 @@ export function nearestStation(x, z, reach) {
   }
   return best;
 }
-// Clamp a point to the walkable floor.
+// Clamp a point to the walkable floor, then push it out of solid furniture
+// (serving counter, prep table) to the nearest edge.
 export function clampFloor(x, z) {
-  return [
-    Math.max(-6.2, Math.min(6.2, x)),
-    Math.max(-2.2, Math.min(3.5, z)),
-  ];
+  let cx = Math.max(-6.2, Math.min(6.2, x));
+  let cz = Math.max(-2.2, Math.min(3.5, z));
+  for (const [x0, z0, x1, z1] of OBSTACLES) {
+    if (cx > x0 && cx < x1 && cz > z0 && cz < z1) {
+      const dl = cx - x0, dr = x1 - cx, dt = cz - z0, db = z1 - cz;
+      const m = Math.min(dl, dr, dt, db);
+      if (m === dl) cx = x0;
+      else if (m === dr) cx = x1;
+      else if (m === dt) cz = z0;
+      else cz = z1;
+    }
+  }
+  return [cx, cz];
 }

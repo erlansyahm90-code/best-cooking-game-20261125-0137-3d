@@ -12,7 +12,7 @@ SHOTS = [
     ("1-cover.jpg", "?scene=cover"),
     ("2-chop.jpg", "?scene=chop"),
     ("3-stove.jpg", "?scene=stove"),
-    ("4-serve.jpg", "?scene=serve"),
+    ("4-shop.jpg", "?scene=shop"),
 ]
 
 AUTOPLAY = """
@@ -22,6 +22,11 @@ AUTOPLAY = """
   const S = () => JK.state();
   JK.newGame();
   JK.setRealtime(false); // scripted clock only — no real-time drift
+  S().orderTimer = 9999; // no random orders: findPlateTarget serves the
+  // most urgent waiting order, so a random order sharing an ingredient
+  // (lettuce/bread) would steal the component off the station-burger
+  // plate and the serve cycle would never complete. Deterministic here;
+  // the waiter section below already used this pattern.
   JK.spawnOrder({recipeId: 'station-burger', passenger: 'santai'});
   const step = (n) => { for (let i = 0; i < n; i++) JK.step(0.5); };
   // Pantry: bread + lettuce (2 hands)
@@ -51,7 +56,33 @@ AUTOPLAY = """
   JK.setChef(5.6, -0.6); JK.interact();
   step(3);
   log.push('coins: ' + S().coins + ' serves: ' + S().serves + ' combo: ' + S().combo);
-  return { log, coins: S().coins, serves: S().serves, errors: window.__errors || [] };
+  // --- WAITER (Pelayan upgrade): buy tier 1, then the waiter alone serves ---
+  // Deterministic: clear random orders, stop auto-spawns, one explicit order.
+  S().orders = S().orders.filter(o => o.state !== 'waiting');
+  S().spots = [null, null, null, null];
+  S().orderTimer = 9999;
+  S().upgrades.waiter = 1;
+  JK.syncStats(); JK.syncWaiters();
+  log.push('waiters: ' + S().waiters.length + ' waiter state: ' + S().waiters[0].state);
+  JK.spawnOrder({recipeId: 'station-burger', passenger: 'buru'});
+  // Chef plates a second station-burger (same steps as cycle 1).
+  JK.setChef(-5.3, -1.8); JK.interact();
+  JK.pickIngredient('bread'); JK.pickIngredient('lettuce');
+  JK.setChef(-2.7, -1.8); JK.interact(); step(6); // chop lettuce
+  JK.setChef(3.0, -1.8); JK.interact(); step(5); // plate bread
+  JK.setChef(-5.3, -1.8); JK.interact(); JK.pickIngredient('patty');
+  JK.setChef(0.1, -1.8); JK.interact(); step(8); // cook to perfect
+  JK.interact(); // take the patty out
+  JK.setChef(3.0, -1.8); JK.interact(); step(5); // plate patty
+  JK.setChef(3.0, -1.8); JK.interact(); step(5); // plate lettuce -> ready
+  log.push('readyPlates for waiter: ' + JSON.stringify(S().readyPlates));
+  // Chef does NOT serve: step and watch the waiter deliver alone.
+  const coinsBefore = S().coins, servesBefore = S().serves;
+  step(40); // up to 20s: walk to window, pick up, walk to passenger, deliver
+  log.push('waiter state after: ' + S().waiters[0].state + ' serves: ' + S().serves + ' coins: ' + S().coins);
+  const waiterServed = S().serves === servesBefore + 1 && S().coins > coinsBefore;
+  log.push('waiter served: ' + waiterServed);
+  return { log, coins: S().coins, serves: S().serves, waiterServed, errors: window.__errors || [] };
 }
 """
 
@@ -92,13 +123,14 @@ def main():
             webgl = page.evaluate("() => { const c = document.getElementById('gl'); return !!c.getContext('webgl'); }")
             print("WebGL:", webgl)
 
-            # Autoplay full serve cycle
+            # Autoplay full serve cycle (chef serve + waiter serve)
             result = page.evaluate(AUTOPLAY)
             for line in result["log"]:
                 print("  ", line)
-            print("AUTOPLAY coins:", result["coins"], "serves:", result["serves"])
-            assert result["coins"] > 0 and result["serves"] == 1, "autoplay failed to serve"
-            print("AUTOPLAY: PASS")
+            print("AUTOPLAY coins:", result["coins"], "serves:", result["serves"], "waiterServed:", result["waiterServed"])
+            assert result["coins"] > 0 and result["serves"] == 2, "autoplay failed to serve twice"
+            assert result["waiterServed"], "autoplay: waiter never delivered"
+            print("AUTOPLAY: PASS (chef serve + waiter serve)")
 
             # Screenshots (fresh page per scene for a clean state)
             for name, query in SHOTS:

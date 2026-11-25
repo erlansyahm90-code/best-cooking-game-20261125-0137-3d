@@ -20,6 +20,8 @@ function fail(msg) {
 
 // Pre-flight gate (same limits as kit RULES.txt, "The gate"): fail loudly
 // here instead of shipping a dossier the scorer would reject.
+// The four shots are cover / chop / stove / shop — the 4th frame shows
+// the upgrade shop open (all 9 upgrades), not a second serve moment.
 function checkGate() {
   const shotDir = join(repoRoot, 'screenshots');
   const shots = existsSync(shotDir) ? readdirSync(shotDir).filter((f) => /\.(jpe?g|png|webp)$/i.test(f)) : [];

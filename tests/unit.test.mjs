@@ -6,8 +6,9 @@ import { LEVELS, levelDef, starsFor } from '../game/js/levels.js';
 import { UPGRADES, effectiveStats, canBuy, tierUnlockLevel } from '../game/js/upgrades.js';
 import { makeOrder, tickOrders, servePayout, patienceFrac, patienceBand } from '../game/js/orders.js';
 import { cookZone, isPerfect, makeCountdown, tickCountdown, makeAction, tickAction, actionFrac } from '../game/js/timer.js';
-import { STATIONS, PASSENGER_SPOTS, burnerSlots, plateSlots, nearestStation, clampFloor } from '../game/js/stations.js';
+import { STATIONS, PASSENGER_SPOTS, burnerSlots, plateSlots, nearestStation, clampFloor, OBSTACLES } from '../game/js/stations.js';
 import { makeChef, giveItem, takeItem, freeHand, handCount, moveChef } from '../game/js/chef.js';
+import { makeWaiter, waiterSpeed, pickWaiterJob, moveToward, WAITER_HOME } from '../game/js/waiter.js';
 
 test('recipes: 7 recipes, unlocks by level', () => {
   assert.equal(RECIPES.length, 7);
@@ -43,8 +44,8 @@ test('levels: 5 shifts with growing pressure', () => {
   assert.equal(starsFor(1, 100, 1), 3);
 });
 
-test('upgrades: 8 upgrades, 3 tiers, locks by level', () => {
-  assert.equal(UPGRADES.length, 8);
+test('upgrades: 9 upgrades, 3 tiers, locks by level', () => {
+  assert.equal(UPGRADES.length, 9);
   for (const u of UPGRADES) assert.equal(u.tiers.length, 3);
   assert.equal(tierUnlockLevel(0), 1);
   assert.equal(tierUnlockLevel(1), 2);
@@ -52,13 +53,48 @@ test('upgrades: 8 upgrades, 3 tiers, locks by level', () => {
   const base = effectiveStats({});
   assert.equal(base.knife.chopTime, 2.0);
   assert.equal(base.stove.burners, 2);
-  const full = effectiveStats({ knife: 3, stove: 3, plating: 3 });
+  assert.equal(base.waiter.waiters, 0);
+  const full = effectiveStats({ knife: 3, stove: 3, plating: 3, waiter: 3 });
   assert.equal(full.knife.chopTime, 0.4);
   assert.equal(full.stove.burners, 3);
   assert.equal(full.plating.plateSlots, 5);
+  assert.equal(full.waiter.waiters, 2);
+  assert.equal(full.waiter.speedMult, 1.5);
+  assert.equal(effectiveStats({ waiter: 2 }).waiter.waiters, 1);
+  assert.equal(effectiveStats({ waiter: 2 }).waiter.speedMult, 1.5);
+  assert.equal(canBuy('waiter', 0, 1, 50).ok, true);
+  assert.equal(canBuy('waiter', 2, 3, 999).ok, false); // tier 3 needs LV4
   assert.equal(canBuy('knife', 0, 1, 25).ok, true);
   assert.equal(canBuy('knife', 1, 1, 999).ok, false); // tier 2 needs LV2
   assert.equal(canBuy('knife', 0, 1, 10).ok, false); // not enough coins
+});
+
+test('waiter: job picking and movement', () => {
+  const w = makeWaiter(WAITER_HOME, 0);
+  assert.equal(w.state, 'idle');
+  assert.equal(w.carrying, null);
+  assert.deepEqual(w.home, WAITER_HOME);
+  // No ready plates -> no job.
+  assert.equal(pickWaiterJob([], [{ state: 'waiting', recipeId: 'station-burger', patience: 10, patienceMax: 10 }]), null);
+  // Ready plate + matching waiting order -> job; claimed plates skipped.
+  const plates = [{ recipeId: 'station-burger' }, { recipeId: 'platform-salad', claimed: true }];
+  const orders = [
+    { state: 'waiting', recipeId: 'platform-salad', patience: 5, patienceMax: 10 },
+    { state: 'waiting', recipeId: 'station-burger', patience: 9, patienceMax: 10 },
+  ];
+  const job = pickWaiterJob(plates, orders);
+  assert.equal(job.dishIndex, 0);
+  assert.equal(job.order.recipeId, 'station-burger');
+  // A failed order never gets a job.
+  assert.equal(pickWaiterJob(plates, [{ state: 'failed', recipeId: 'station-burger', patience: 0, patienceMax: 10 }]), null);
+  // Speed: tier 2 is 50% faster, tier 3 keeps the speed with 2 waiters.
+  assert.equal(waiterSpeed({ waiter: { speedMult: 1 } }), 2.2);
+  assert.ok(Math.abs(waiterSpeed({ waiter: { speedMult: 1.5 } }) - 3.3) < 1e-9);
+  // moveToward: arrives exactly, never overshoots.
+  const m1 = moveToward(0, 0, 10, 0, 2.2, 1);
+  assert.ok(Math.abs(m1.x - 2.2) < 1e-9 && m1.arrived === false);
+  const m2 = moveToward(9.95, 0, 10, 0, 2.2, 1);
+  assert.equal(m2.arrived, true);
 });
 
 test('orders: patience bands and payout math', () => {
@@ -105,6 +141,15 @@ test('stations: layout, burners, plates, reach', () => {
   const [x, z] = clampFloor(99, -99);
   assert.equal(x, 6.2);
   assert.equal(z, -2.2);
+  // Solid furniture: the serving counter and the prep table push the
+  // walker out to the nearest edge; open floor is untouched.
+  assert.equal(OBSTACLES.length, 3); // serving counter, prep table, bench
+  const [ox, oz] = clampFloor(-5.3, 1.0);
+  assert.ok(ox === -5.8 || ox === -4.8 || oz === -0.9 || oz === 2.9);
+  const [px2, pz2] = clampFloor(0, 2.3);
+  assert.equal(px2, 0);
+  assert.ok(Math.abs(pz2 - 1.8) < 1e-9);
+  assert.deepEqual(clampFloor(1.6, -1.2), [1.6, -1.2]);
 });
 
 test('chef: two hand slots, movement', () => {
@@ -120,4 +165,74 @@ test('chef: two hand slots, movement', () => {
   moveChef(chef, 1, 0, 1, 1);
   assert.ok(chef.x > 4 && chef.x < 4.5);
   assert.equal(chef.moving, true);
+});
+
+import { musicMelody, musicTempoMs, SoundBank } from '../game/js/audio.js';
+
+test('audio: 32-step melody varies by level, Rush Hour is faster', () => {
+  for (const lv of [1, 2, 3, 4, 5]) assert.equal(musicMelody(lv).length, 32);
+  const m1 = musicMelody(1), m3 = musicMelody(3), m5 = musicMelody(5);
+  // Levels 1-2: phrase A twice (same notes in both halves).
+  assert.deepEqual(m1.slice(0, 16), m1.slice(16, 32));
+  // Levels 3-4: A + B (second half differs from the first).
+  assert.notDeepEqual(m3.slice(0, 16), m3.slice(16, 32));
+  // Level 5: second half is B an octave up.
+  assert.deepEqual(m5.slice(16, 32), m3.slice(16, 32).map((f) => (f ? f * 2 : 0)));
+  // First half never changes; the rest (0) ends each phrase.
+  assert.deepEqual(m1.slice(0, 16), m3.slice(0, 16));
+  assert.equal(m1[15], 0);
+  assert.equal(musicTempoMs(1), 340);
+  assert.equal(musicTempoMs(5), 300);
+  assert.ok(musicTempoMs(5) < musicTempoMs(1));
+});
+
+// Minimal fake AudioContext so the SoundBank can be exercised in node
+// (no real audio device, no timers left running after the test).
+function fakeAudioContext() {
+  const param = () => ({ value: 0, setValueAtTime() {}, exponentialRampToValueAtTime() {}, setTargetAtTime() {} });
+  return {
+    currentTime: 0,
+    sampleRate: 44100,
+    destination: {},
+    resume() {},
+    createBuffer(_ch, len) { return { getChannelData: () => new Float32Array(len) }; },
+    createBufferSource() {
+      return { buffer: null, loop: false, connect() { return this; }, start() { this.started = true; }, stop() { this.stopped = true; } };
+    },
+    createBiquadFilter() { return { type: '', frequency: param(), Q: param(), connect() { return this; } }; },
+    createGain() { return { gain: param(), connect() { return this; } }; },
+    createOscillator() { return { type: '', frequency: param(), connect() { return this; }, start() {}, stop() {} }; },
+  };
+}
+
+test('audio: sizzle loop is idempotent, mute silences it, music restarts on unmute', () => {
+  globalThis.window = { AudioContext: function () { return fakeAudioContext(); } };
+  try {
+    const sb = new SoundBank();
+    sb.startSizzle();
+    assert.ok(sb.sizzle, 'sizzle nodes created');
+    const first = sb.sizzle;
+    sb.startSizzle();
+    assert.equal(sb.sizzle, first, 'second startSizzle reuses the loop');
+    sb.stopSizzle();
+    assert.equal(sb.sizzle, null, 'stopSizzle clears the loop');
+    sb.stopSizzle(); // no-op, no throw
+    // Music: wanted flag survives mute, timer restarts on unmute.
+    sb.startMusic(1);
+    assert.equal(sb.musicWanted, true);
+    assert.ok(sb.musicTimer, 'music timer running');
+    sb.setMuted(true);
+    assert.equal(sb.musicTimer, null, 'mute stops the music timer');
+    assert.equal(sb.sizzle, null, 'mute also stops the sizzle loop');
+    sb.setMuted(false);
+    assert.ok(sb.musicTimer, 'unmute restarts the music timer');
+    sb.setMusicLevel(5);
+    assert.equal(sb.musicLevel, 5);
+    assert.equal(musicTempoMs(sb.musicLevel), 300);
+    sb.stopMusic();
+    assert.equal(sb.musicTimer, null);
+    assert.equal(sb.musicWanted, false);
+  } finally {
+    delete globalThis.window;
+  }
 });
