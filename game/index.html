@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Junction Kitchen 3D — a train-station cooking game</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #0b0b10; height: 100%; overflow: hidden; }
+  #wrap { position: relative; width: 1280px; height: 720px; margin: 0 auto; }
+  canvas { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; display: block; }
+  #hud { cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="gl" width="1280" height="720"></canvas>
+  <canvas id="hud" width="1280" height="720"></canvas>
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

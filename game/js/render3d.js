@@ -1,0 +1,340 @@
+// render3d.js — The 3D scene of Junction Kitchen: floor, wall, departure
+// board, five stations, chef, passengers on the left platform, flames,
+// steam and the locked-slot markers. Draws from a plain state object
+// (see main.js for its shape). HUD text/bars are drawn on the 2D canvas
+// in main.js, projected from these same world positions.
+
+import { Renderer, matPerspective, matLookAt, matMultiply, compose, projectPoint, hex, shade, lerpColor } from './gl.js';
+import { STATIONS, PASSENGER_SPOTS, burnerSlots, plateSlots } from './stations.js';
+import { INGREDIENTS } from './recipes.js';
+import { PASSENGERS } from './orders.js';
+
+export const CAMERA = {
+  eye: [0, 10.2, 9.6],
+  target: [0, 0.4, -1.2],
+  up: [0, 1, 0],
+  fovy: 0.9, // ~52 degrees
+};
+
+export function makeViewProjection(w, h) {
+  const proj = matPerspective(CAMERA.fovy, w / h, 0.1, 100);
+  const view = matLookAt(CAMERA.eye, CAMERA.target, CAMERA.up);
+  return matMultiply(proj, view);
+}
+
+export function projectToScreen(vp, x, y, z, w, h) {
+  return projectPoint(vp, [x, y, z], w, h);
+}
+
+export class Scene3D {
+  constructor(canvas) {
+    this.r = new Renderer(canvas);
+    this.canvas = canvas;
+  }
+
+  render(state, time) {
+    const r = this.r;
+    const w = this.canvas.width, h = this.canvas.height;
+    const vp = makeViewProjection(w, h);
+    this.vp = vp;
+    r.begin(vp, [0.45, 0.85, 0.4]);
+    this.drawFloorAndWall(r, time);
+    this.drawDepartureBoard(r, state, time);
+    this.drawStations(r, state, time);
+    this.drawPassengers(r, state, time);
+    this.drawChef(r, state, time);
+    if (state.sousChef) this.drawSousChef(r, state, time);
+    if (state.serveAnim) this.drawServeAnim(r, state);
+    this.drawParticles(r, state);
+  }
+
+  // The plate flies from the serving window to the passenger.
+  drawServeAnim(r, state) {
+    const a = state.serveAnim;
+    const t = Math.min(1, a.t / a.dur);
+    const x = a.from.x + (a.to.x - a.from.x) * t;
+    const z = a.from.z + (a.to.z - a.from.z) * t;
+    const y = 1.2 + Math.sin(t * Math.PI) * 1.4;
+    r.cyl(x, y, z, 0.42, 0.07, hex('#f2f2f2'));
+    const c = a.dish.color || [0.9, 0.7, 0.3];
+    r.sph(x, y + 0.1, z, 0.2, shade(c, 1.1));
+    r.sph(x + 0.12, y + 0.08, z + 0.08, 0.12, shade(c, 0.9));
+  }
+
+  // ---------- room ----------
+  drawFloorAndWall(r, time) {
+    // Platform tiles: alternating terracotta / cream checker.
+    for (let ix = -6; ix <= 6; ix++) {
+      for (let iz = -4; iz <= 5; iz++) {
+        const even = (ix + iz) % 2 === 0;
+        r.box(ix + 0.0, -0.06, iz + 0.0, 1, 0.12, 1,
+          even ? hex('#b5773f') : hex('#d9b078'));
+      }
+    }
+    // Side platform strip (passenger side, left).
+    for (let iz = -2; iz <= 4; iz++) {
+      r.box(-6.9, -0.04, iz, 0.9, 0.08, 1, hex('#8a6a4f'));
+    }
+    // Back wall: deep station red with brass trim.
+    r.box(0, 2.2, -4.6, 15, 4.6, 0.3, hex('#5a1f16'));
+    r.box(0, 0.15, -4.42, 15, 0.3, 0.1, hex('#c9a227'));
+    // Wall lamps (warm glow orbs).
+    for (const lx of [-5, -1.5, 2, 5]) {
+      r.sph(lx, 4.3, -4.35, 0.22, hex('#ffd97a'));
+      r.box(lx, 4.05, -4.4, 0.3, 0.18, 0.12, hex('#3a3a3a'));
+    }
+    // Right wall hint + serving hatch frame.
+    r.box(6.9, 1.8, -0.5, 0.3, 3.8, 6.5, hex('#4a1a12'));
+  }
+
+  // ---------- departure board (order board in 3D) ----------
+  drawDepartureBoard(r, state, time) {
+    // Big dark board above the stations.
+    r.box(0, 3.3, -4.42, 8.4, 1.7, 0.15, hex('#101014'));
+    r.box(0, 3.3, -4.33, 8.6, 0.12, 0.1, hex('#c9a227'));
+    r.box(0, 2.42, -4.33, 8.6, 0.12, 0.1, hex('#c9a227'));
+    // Train lines: one glowing strip per waiting order.
+    const orders = state.orders.filter((o) => o.state === 'waiting');
+    orders.slice(0, 4).forEach((o, i) => {
+      const y = 3.85 - i * 0.32;
+      const frac = o.patience / o.patienceMax;
+      const col = frac > 0.5 ? [0.25, 0.85, 0.35] : frac > 0.25 ? [1.0, 0.65, 0.1] : [0.95, 0.2, 0.2];
+      r.box(-3.6, y, -4.3, 1.1, 0.2, 0.06, o.express ? hex('#ffd700') : col);
+      r.box(-1.2, y, -4.3, 2.6 * Math.max(0.08, frac), 0.16, 0.06, col);
+      r.box(2.6, y, -4.3, 1.5, 0.2, 0.06, hex('#3a3f4a'));
+    });
+    // Clock on the board (a round face).
+    r.cyl(3.9, 3.3, -4.3, 0.42, 0.1, hex('#f5ead0'));
+    const ang = (time % 60) / 60 * Math.PI * 2;
+    r.box(3.9 + Math.sin(ang) * 0.18, 3.3 + Math.cos(ang) * 0.18, -4.24, 0.05, 0.3, 0.05, hex('#222222'));
+  }
+
+  // ---------- stations ----------
+  drawStations(r, state, time) {
+    for (const s of STATIONS) {
+      if (s.needsUpgrade && !state.upgrades.warming) {
+        // Locked warming station: dark rack + padlock prop.
+        r.box(s.x, 0.55, s.z, s.w, 1.1, s.d, hex('#2a2a2e'));
+        r.box(s.x, 1.15, s.z, 0.5, 0.5, 0.5, hex('#c9a227'));
+        r.box(s.x, 1.05, s.z, 0.28, 0.3, 0.1, hex('#111111'));
+        continue;
+      }
+      // Counter body + top.
+      r.box(s.x, 0.5, s.z, s.w, 1.0, s.d, s.color);
+      r.box(s.x, 1.02, s.z, s.w + 0.12, 0.08, s.d + 0.12, s.topColor);
+      if (s.id === 'pantry') this.drawPantry(r, state, time);
+      if (s.id === 'chopping') this.drawChopping(r, state, time);
+      if (s.id === 'stove') this.drawStove(r, state, time);
+      if (s.id === 'plating') this.drawPlating(r, state, time);
+      if (s.id === 'serving') this.drawServing(r, state, time);
+      if (s.id === 'warming') this.drawWarming(r, state, time);
+    }
+  }
+
+  drawPantry(r, state, time) {
+    // Shelf with ingredient crates (coloured cubes).
+    const items = state.pantryItems || [];
+    r.box(-5.3, 1.55, -3.35, 2.0, 0.1, 0.8, hex('#8a6a4f'));
+    items.forEach((ing, i) => {
+      const x = -6.05 + (i % 4) * 0.5;
+      const z = -3.35 + Math.floor(i / 4) * 0.5;
+      const c = INGREDIENTS[ing] ? INGREDIENTS[ing].color : [0.8, 0.8, 0.8];
+      r.box(x, 1.3, z, 0.4, 0.34, 0.4, c);
+      if (state.pantryHighlight === ing) {
+        r.box(x, 1.52, z, 0.46, 0.06, 0.46, hex('#ffd700'));
+      }
+    });
+  }
+
+  drawChopping(r, state, time) {
+    const s = stationById('chopping');
+    // Board + knife block.
+    r.box(s.x, 1.1, s.z, 1.1, 0.06, 0.7, hex('#e8d5a8'));
+    r.box(s.x + 0.85, 1.25, s.z - 0.3, 0.18, 0.4, 0.3, hex('#4a3a28'));
+    const ch = state.chopping;
+    if (ch && ch.ing) {
+      const c = INGREDIENTS[ch.ing].color;
+      // The piece being chopped (shrinks + splits as progress grows).
+      const p = ch.progress;
+      r.box(s.x - 0.2, 1.2, s.z, 0.34 * (1 - p * 0.4), 0.16, 0.34, c);
+      r.box(s.x + 0.25, 1.2, s.z + 0.1, 0.16, 0.14, 0.16, shade(c, 1.15));
+      r.box(s.x + 0.25, 1.2, s.z - 0.15, 0.16, 0.14, 0.16, shade(c, 1.15));
+      // Knife bobbing.
+      const bob = Math.sin(time * 14) * 0.08;
+      r.box(s.x + 0.85, 1.5 + bob, s.z + 0.1, 0.08, 0.5, 0.22, hex('#c0c8d0'));
+    }
+    // Chopped pieces waiting on the board.
+    (state.boardPieces || []).forEach((ing, i) => {
+      const c = INGREDIENTS[ing].color;
+      r.box(s.x - 0.5 + i * 0.3, 1.18, s.z + 0.3, 0.16, 0.12, 0.16, shade(c, 1.2));
+    });
+  }
+
+  drawStove(r, state, time) {
+    const slots = burnerSlots(state.burners.length);
+    state.burners.forEach((b, i) => {
+      const slot = slots[i];
+      if (!slot) return;
+      // Burner ring.
+      r.cyl(slot.x, 1.08, slot.z, 0.42, 0.06, hex('#0c0c0e'));
+      if (b.state === 'cooking') {
+        // Flame cones, wider than the pot and flared toward the camera
+        // so the fire reads clearly from the angled view.
+        const flame = ((state.stats.stove && state.stats.stove.flame) || 1) * (0.8 + Math.sin(time * 9 + i * 2) * 0.2);
+        r.cone(slot.x, 1.12, slot.z + 0.14, 0.44 * flame, 0.85 * flame, hex('#ff7a1a'));
+        r.cone(slot.x, 1.18, slot.z + 0.14, 0.24 * flame, 0.55 * flame, hex('#ffd23e'));
+        // Pot + contents: stage by stage — raw (dark) -> half (true
+        // colour) -> cooked (golden-brown).
+        r.cyl(slot.x, 1.32, slot.z, 0.36, 0.42, hex('#3c3f45'));
+        const c = INGREDIENTS[b.ing] ? INGREDIENTS[b.ing].color : [0.8, 0.8, 0.8];
+        const p = b.progress;
+        const stage = p < 0.35 ? shade(c, 0.75) : p < 0.65 ? c : lerpColor(c, [0.78, 0.52, 0.22], Math.min(1, (p - 0.65) / 0.35));
+        r.cyl(slot.x, 1.52, slot.z, 0.3, 0.06, stage);
+      } else if (b.state === 'burnt') {
+        r.cyl(slot.x, 1.32, slot.z, 0.36, 0.42, hex('#1a1a1a'));
+        r.cyl(slot.x, 1.52, slot.z, 0.3, 0.06, hex('#0a0a0a'));
+      }
+    });
+    // Locked 3rd burner slot (until stove tier 3).
+    if (state.burners.length < 3) {
+      const s = stationById('stove');
+      r.box(s.x + 1.05, 1.12, s.z, 0.4, 0.12, 0.4, hex('#2a2a2e'));
+      r.box(s.x + 1.05, 1.32, s.z, 0.22, 0.22, 0.08, hex('#c9a227'));
+    }
+  }
+
+  drawPlating(r, state, time) {
+    const slots = plateSlots(state.plateSlots);
+    state.plates.forEach((p, i) => {
+      const slot = slots[i];
+      if (!slot) return;
+      // Plate + assembled components as coloured food piles.
+      r.cyl(slot.x, 1.1, slot.z, 0.42, 0.07, hex('#f2f2f2'));
+      p.components.forEach((comp, j) => {
+        if (!comp.done) return;
+        const c = INGREDIENTS[comp.ing].color;
+        const a = (j / Math.max(1, p.components.length)) * Math.PI * 2;
+        r.sph(slot.x + Math.cos(a) * 0.16, 1.2, slot.z + Math.sin(a) * 0.16, 0.13, shade(c, 1.1));
+      });
+      if (p.complete) {
+        r.box(slot.x, 1.45, slot.z, 0.5, 0.06, 0.5, hex('#ffd700'));
+      }
+    });
+    // Empty plate slots show as faint outlines.
+    for (let i = state.plates.length; i < slots.length; i++) {
+      r.cyl(slots[i].x, 1.09, slots[i].z, 0.42, 0.05, hex('#c8c8cc'));
+    }
+    // A component lands one by one: while a plate action runs, the piece
+    // descends from above the counter onto its slot.
+    const act = state.action;
+    if (act && act.type === 'plate' && act.plate && act.item) {
+      const idx = state.plates.indexOf(act.plate);
+      const slot = slots[idx];
+      if (slot) {
+        const p = Math.min(1, act.t / act.duration);
+        const c = INGREDIENTS[act.item.ing].color;
+        r.box(slot.x, 2.4 - p * 1.2, slot.z, 0.3, 0.26, 0.3, c);
+      }
+    }
+  }
+
+  drawServing(r, state, time) {
+    const s = stationById('serving');
+    // Window frame + bell.
+    r.box(s.x, 1.7, s.z - 0.9, 1.3, 0.9, 0.15, hex('#1c3a5a'));
+    r.box(s.x, 1.55, s.z + 0.55, 0.3, 0.3, 0.3, hex('#ffd700'));
+    // Ready dishes lined up on the counter (front row = judge sees them).
+    state.readyPlates.forEach((dish, i) => {
+      const x = s.x - 0.35 + (i % 2) * 0.7;
+      const z = s.z - 0.5 + Math.floor(i / 2) * 0.7;
+      r.cyl(x, 1.1, z, 0.42, 0.07, hex('#f2f2f2'));
+      const c = dish.color || [0.9, 0.7, 0.3];
+      r.sph(x, 1.2, z, 0.2, shade(c, 1.1));
+      r.sph(x + 0.12, 1.18, z + 0.08, 0.12, shade(c, 0.9));
+    });
+    // Tea pot (calming tea action).
+    r.cyl(s.x - 0.35, 1.25, s.z + 0.75, 0.16, 0.3, hex('#7a4a8a'));
+    r.sph(s.x - 0.35, 1.45, s.z + 0.75, 0.12, hex('#9a6aaa'));
+  }
+
+  drawWarming(r, state, time) {
+    const s = stationById('warming');
+    // Rack + heat lamp glow.
+    r.box(s.x, 1.35, s.z, 1.0, 0.08, 1.2, hex('#8a4a20'));
+    r.box(s.x, 1.9, s.z, 0.9, 0.08, 0.5, hex('#c9a227'));
+    r.sph(s.x, 1.8, s.z, 0.14, hex('#ffb347'));
+    (state.warmingItems || []).forEach((item, i) => {
+      const c = INGREDIENTS[item.ing].color;
+      r.sph(s.x - 0.25 + i * 0.5, 1.5, s.z, 0.18, shade(c, 1.1));
+    });
+  }
+
+  // ---------- passengers (left platform) ----------
+  drawPassengers(r, state, time) {
+    const waiting = state.orders.filter((o) => o.state === 'waiting');
+    waiting.forEach((o) => {
+      const spot = PASSENGER_SPOTS[o.spot];
+      if (!spot) return;
+      const p = PASSENGERS[o.passenger] || PASSENGERS.santai;
+      const joy = state.passengerJoy && state.passengerJoy.spot === o.spot;
+      const bob = joy ? Math.abs(Math.sin(time * 10)) * 0.18 : Math.sin(time * 2 + o.spot) * 0.03;
+      // Body capsule + head, passenger colour.
+      r.cyl(spot.x, 0.55 + bob, spot.z, 0.34, 0.9, p.color);
+      r.sph(spot.x, 1.25 + bob, spot.z, 0.28, hex('#f0c08a'));
+      // Hair cap.
+      r.sph(spot.x, 1.42 + bob, spot.z, 0.26, o.passenger === 'vip' ? hex('#2a2a2a') : hex('#5a3a1a'));
+      // Ticket card above the head (white, tilted toward camera).
+      r.box(spot.x + 0.55, 1.9 + bob, spot.z, 0.85, 0.6, 0.06, hex('#fdfdf2'));
+      r.box(spot.x + 0.55, 1.9 + bob, spot.z + 0.04, 0.6, 0.12, 0.02, o.recipeColor || [0.9, 0.7, 0.3]);
+      if (o.express) {
+        r.box(spot.x + 0.55, 2.25 + bob, spot.z, 0.5, 0.16, 0.06, hex('#ffd700'));
+      }
+    });
+  }
+
+  // ---------- chef ----------
+  drawChef(r, state, time) {
+    const c = state.chef;
+    const bobY = c.moving ? Math.abs(Math.sin(c.bob)) * 0.07 : 0;
+    const x = c.x, z = c.z;
+    // Body (white coat) + apron + head + tall chef hat. Scaled up a touch
+    // so the chef reads clearly at 768x480.
+    r.cyl(x, 0.8 + bobY, z, 0.4, 1.05, hex('#f5f5f0'));
+    const fx = Math.sin(c.facing), fz = Math.cos(c.facing);
+    r.box(x + fx * 0.38, 0.75 + bobY, z + fz * 0.38, 0.46, 0.6, 0.08, hex('#2f6db3'));
+    r.sph(x, 1.62 + bobY, z, 0.32, hex('#f0c08a'));
+    r.cyl(x, 1.92 + bobY, z, 0.34, 0.24, hex('#ffffff'));
+    r.box(x, 2.1 + bobY, z, 0.48, 0.2, 0.48, hex('#ffffff'));
+    // Arms reaching toward facing direction.
+    r.box(x + fx * 0.36, 1.08 + bobY, z + fz * 0.36, 0.18, 0.18, 0.44, hex('#e8e8e0'));
+    // Carried items float above the hands.
+    c.hands.forEach((item, i) => {
+      if (!item) return;
+      const col = INGREDIENTS[item.ing] ? INGREDIENTS[item.ing].color : [0.8, 0.8, 0.8];
+      const off = i === 0 ? -0.24 : 0.24;
+      const px = x + fx * 0.5 + Math.cos(c.facing) * off;
+      const pz = z + fz * 0.5 - Math.sin(c.facing) * off;
+      const done = item.chopped || item.cooked;
+      r.box(px, 1.35 + bobY, pz, 0.32, done ? 0.22 : 0.32, 0.32, done ? shade(col, 1.25) : col);
+    });
+  }
+
+  drawSousChef(r, state, time) {
+    // Helper in a teal coat, chopping at the board's side.
+    const x = -1.6, z = -2.2;
+    const bobY = Math.abs(Math.sin(time * 6)) * 0.04;
+    r.cyl(x, 0.75 + bobY, z, 0.32, 0.9, hex('#2a9d8f'));
+    r.sph(x, 1.45 + bobY, z, 0.26, hex('#e8b88a'));
+    r.cyl(x, 1.7 + bobY, z, 0.26, 0.18, hex('#ffffff'));
+  }
+
+  drawParticles(r, state) {
+    (state.particles || []).forEach((p) => {
+      r.sph(p.x, p.y, p.z, p.r, [0.92, 0.92, 0.95]);
+    });
+  }
+}
+
+export function stationById(id) {
+  return STATIONS.find((s) => s.id === id) || null;
+}
