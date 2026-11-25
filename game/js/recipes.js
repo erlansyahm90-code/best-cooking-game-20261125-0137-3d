@@ -115,3 +115,11 @@ export function nextPrepStep(component, state) {
 export function componentReady(component, state) {
   return nextPrepStep(component, state) === null;
 }
+// How many cut pieces show on the chopping board at chop progress p
+// (0..1): one piece appears per knife stroke, 3 strokes total, so the
+// player (and the judge, in a screenshot) sees the pieces land one by
+// one instead of the whole ingredient popping into chunks at once.
+export function chopPiecesVisible(progress) {
+  const p = Math.max(0, Math.min(1, progress || 0));
+  return Math.min(3, Math.floor(p * 3));
+}

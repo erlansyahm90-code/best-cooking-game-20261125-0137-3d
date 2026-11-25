@@ -94,6 +94,17 @@ export function servePayout(order, ctx) {
   };
 }
 
+// Departure time printed on the board for row `i` (0 = top row):
+// the first train leaves 08:15, the next ones every 5 minutes. The
+// board is a real departure board: train number + time + dish, not
+// just glowing bars.
+export function departureTime(i) {
+  const mins = 8 * 60 + 15 + i * 5;
+  const hh = String(Math.floor(mins / 60)).padStart(2, '0');
+  const mm = String(mins % 60).padStart(2, '0');
+  return hh + ':' + mm;
+}
+
 // Score of one order for the board: how urgent it is (0..1, 1 = about to fail).
 export function urgency(order) {
   return 1 - patienceFrac(order);

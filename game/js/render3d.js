@@ -6,7 +6,7 @@
 
 import { Renderer, matPerspective, matLookAt, matMultiply, compose, projectPoint, hex, shade, lerpColor } from './gl.js';
 import { STATIONS, PASSENGER_SPOTS, SERVING_COUNTER, PREP_TABLE, burnerSlots, plateSlots } from './stations.js';
-import { INGREDIENTS } from './recipes.js';
+import { INGREDIENTS, chopPiecesVisible } from './recipes.js';
 import { PASSENGERS } from './orders.js';
 
 // Which upgrade tier shows on each station's front edge (gold pips).
@@ -62,26 +62,27 @@ export class Scene3D {
   }
 
   // A plate in flight (chef serve or waiter delivery): same 0.9s arc.
-  // Big, with a gold rim and a motion trail, so the serve reads clearly
-  // even at 768x480 — a small white disc on the cream floor did not.
+  // BIG, with a gold rim and a long motion trail, so the serve reads
+  // clearly even at 768x480 — a small white disc on the cream floor
+  // did not, and the cover's serve moment must be impossible to miss.
   drawFlyingPlate(r, a) {
     const t = Math.min(1, a.t / a.dur);
     const x = a.from.x + (a.to.x - a.from.x) * t;
     const z = a.from.z + (a.to.z - a.from.z) * t;
     const y = 1.2 + Math.sin(t * Math.PI) * 1.4;
     // Motion trail: shrinking gold dots behind the plate.
-    for (let k = 1; k <= 3; k++) {
-      const bt = Math.max(0, t - k * 0.09);
+    for (let k = 1; k <= 5; k++) {
+      const bt = Math.max(0, t - k * 0.07);
       const bx = a.from.x + (a.to.x - a.from.x) * bt;
       const bz = a.from.z + (a.to.z - a.from.z) * bt;
       const by = 1.2 + Math.sin(bt * Math.PI) * 1.4;
-      r.sph(bx, by, bz, 0.1 - k * 0.02, hex('#ffd700'));
+      r.sph(bx, by, bz, 0.12 - k * 0.018, hex('#ffd700'));
     }
-    r.cyl(x, y - 0.02, z, 0.54, 0.05, hex('#c9a227'));
-    r.cyl(x, y, z, 0.5, 0.07, hex('#f2f2f2'));
+    r.cyl(x, y - 0.02, z, 0.72, 0.06, hex('#c9a227'));
+    r.cyl(x, y, z, 0.68, 0.08, hex('#f2f2f2'));
     const c = a.dish.color || [0.9, 0.7, 0.3];
-    r.sph(x, y + 0.12, z, 0.24, shade(c, 1.1));
-    r.sph(x + 0.15, y + 0.1, z + 0.1, 0.15, shade(c, 0.9));
+    r.sph(x, y + 0.14, z, 0.3, shade(c, 1.1));
+    r.sph(x + 0.2, y + 0.12, z + 0.12, 0.2, shade(c, 0.9));
   }
 
   // ---------- room ----------
@@ -120,6 +121,25 @@ export class Scene3D {
       r.box(px, 0.2, -4.35, 0.8, 0.4, 0.8, hex('#c9a227'));
       r.box(px, 4.3, -4.35, 0.8, 0.3, 0.8, hex('#c9a227'));
     }
+    // Lower floor props (round 2 fix): the bottom half of the kitchen
+    // was bare checkerboard. A round rug (flat, walkable) in the open
+    // floor + crates, sacks and a potted plant along the platform
+    // edges — all outside the walkable clamp, so nobody walks through
+    // them, and the floor never reads empty again.
+    r.cyl(2.8, 0.02, 2.6, 1.3, 0.03, hex('#7a1f1f'));
+    r.cyl(2.8, 0.03, 2.6, 1.0, 0.03, hex('#9a2f2f'));
+    r.cyl(2.8, 0.04, 2.6, 0.55, 0.03, hex('#c9a227'));
+    r.box(6.4, 0.35, 2.6, 0.7, 0.7, 0.7, hex('#8a6a3a'));
+    r.box(6.4, 0.95, 2.6, 0.55, 0.5, 0.55, hex('#6a4a28'));
+    r.box(6.4, 0.35, 1.7, 0.6, 0.6, 0.6, hex('#7a5a32'));
+    r.sph(-6.4, 0.28, 3.3, 0.3, hex('#b59a6a'));
+    r.sph(-6.35, 0.26, 2.85, 0.26, hex('#a88a55'));
+    r.cyl(6.4, 0.3, 0.2, 0.3, 0.5, hex('#8a4a20'));
+    r.sph(6.4, 0.75, 0.2, 0.34, hex('#2a7a3a'));
+    r.sph(6.4, 0.95, 0.2, 0.24, hex('#359a45'));
+    r.box(-6.4, 0.4, -2.8, 0.5, 0.8, 0.5, hex('#6a4a2a'));
+    r.cyl(-6.4, 0.85, -2.8, 0.28, 0.18, hex('#8a6a3a'));
+    r.sph(-6.4, 0.98, -2.8, 0.16, hex('#e74c3c'));
     // Right wall hint + serving hatch frame.
     r.box(6.9, 1.8, -0.5, 0.3, 3.8, 6.5, hex('#4a1a12'));
   }
@@ -135,10 +155,12 @@ export class Scene3D {
     for (let i = 0; i < 5; i++) {
       r.box(-3.4 + i * 1.15, 3.98, -4.3, 0.7, 0.1, 0.04, hex('#ffd700'));
     }
-    // Train lines: one glowing strip per waiting order.
+    // Train lines: one glowing strip per waiting order. Rows sit in
+    // the LOWER half of the board (y 3.55 down) so the 2D row text
+    // never collides with the order tickets at the top of the screen.
     const orders = state.orders.filter((o) => o.state === 'waiting');
     orders.slice(0, 4).forEach((o, i) => {
-      const y = 3.85 - i * 0.32;
+      const y = 3.55 - i * 0.32;
       const frac = o.patience / o.patienceMax;
       const col = frac > 0.5 ? [0.25, 0.85, 0.35] : frac > 0.25 ? [1.0, 0.65, 0.1] : [0.95, 0.2, 0.2];
       r.box(-3.6, y, -4.3, 1.1, 0.2, 0.06, o.express ? hex('#ffd700') : col);
@@ -148,7 +170,7 @@ export class Scene3D {
     // Dim "next trains" rows below the live orders (the board is a
     // real departure board, not just the orders).
     for (let i = orders.length; i < 4; i++) {
-      const y = 3.85 - i * 0.32;
+      const y = 3.55 - i * 0.32;
       r.box(-3.6, y, -4.3, 1.1, 0.14, 0.05, hex('#2a2f3a'));
       r.box(-1.2, y, -4.3, 2.2, 0.1, 0.05, hex('#232830'));
       r.box(2.6, y, -4.3, 1.5, 0.14, 0.05, hex('#2a2f3a'));
@@ -276,19 +298,24 @@ export class Scene3D {
     const ch = state.chopping;
     if (ch && ch.ing) {
       const c = INGREDIENTS[ch.ing].color;
-      // The piece being chopped (shrinks + splits as progress grows).
+      // The piece being chopped (shrinks as progress grows) + the cut
+      // pieces landing ONE BY ONE: chopPiecesVisible(progress) is 0, 1,
+      // 2 then 3 as the 3 knife strokes land — a row of big pieces
+      // across the front of the board, impossible to miss.
       const p = ch.progress;
       r.box(s.x - 0.2, 1.2, s.z, 0.34 * (1 - p * 0.4), 0.16, 0.34, c);
-      r.box(s.x + 0.25, 1.2, s.z + 0.1, 0.16, 0.14, 0.16, shade(c, 1.15));
-      r.box(s.x + 0.25, 1.2, s.z - 0.15, 0.16, 0.14, 0.16, shade(c, 1.15));
-      // Knife bobbing.
+      const cut = chopPiecesVisible(p);
+      for (let k = 0; k < cut; k++) {
+        r.box(s.x - 0.45 + k * 0.34, 1.2, s.z + 0.38, 0.26, 0.16, 0.26, shade(c, 1.2));
+      }
+      // Knife bobbing, bigger blade so the chop reads mid-swing.
       const bob = Math.sin(time * 14) * 0.08;
-      r.box(s.x + 0.85, 1.5 + bob, s.z + 0.1, 0.08, 0.5, 0.22, hex('#c0c8d0'));
+      r.box(s.x + 0.85, 1.5 + bob, s.z + 0.1, 0.1, 0.62, 0.26, hex('#c0c8d0'));
     }
-    // Chopped pieces waiting on the board.
+    // Chopped pieces waiting on the board (bigger, in a row).
     (state.boardPieces || []).forEach((ing, i) => {
       const c = INGREDIENTS[ing].color;
-      r.box(s.x - 0.5 + i * 0.3, 1.18, s.z + 0.3, 0.16, 0.12, 0.16, shade(c, 1.2));
+      r.box(s.x - 0.5 + i * 0.34, 1.18, s.z + 0.32, 0.24, 0.14, 0.24, shade(c, 1.2));
     });
   }
 
@@ -313,18 +340,31 @@ export class Scene3D {
       // Burner ring.
       r.cyl(slot.x, 1.08, slot.z, 0.42, 0.06, hex('#0c0c0e'));
       if (b.state === 'cooking') {
-        // Flame cones, wider than the pot and flared toward the camera
-        // so the fire reads clearly from the angled view.
-        const flame = ((state.stats.stove && state.stats.stove.flame) || 1) * (0.8 + Math.sin(time * 9 + i * 2) * 0.2);
-        r.cone(slot.x, 1.12, slot.z + 0.14, 0.44 * flame, 0.85 * flame, hex('#ff7a1a'));
-        r.cone(slot.x, 1.18, slot.z + 0.14, 0.24 * flame, 0.55 * flame, hex('#ffd23e'));
+        // Fire that READS: a glowing ring under the pot, three flame
+        // cones flared toward the camera (wider than the pot, so the
+        // fire is never hidden behind it), plus flickering embers at
+        // the pot's base.
+        const flame = ((state.stats.stove && state.stats.stove.flame) || 1) * (0.85 + Math.sin(time * 9 + i * 2) * 0.15);
+        r.cyl(slot.x, 1.09, slot.z, 0.52, 0.05, hex('#ff5a00'));
+        r.cone(slot.x, 1.12, slot.z + 0.26, 0.62 * flame, 1.05 * flame, hex('#ff5a00'));
+        r.cone(slot.x, 1.12, slot.z + 0.26, 0.44 * flame, 0.85 * flame, hex('#ff7a1a'));
+        r.cone(slot.x, 1.18, slot.z + 0.26, 0.24 * flame, 0.55 * flame, hex('#ffd23e'));
+        for (let e = 0; e < 3; e++) {
+          const ea = (e / 3) * Math.PI * 2 + time * 2;
+          r.sph(slot.x + Math.cos(ea) * 0.42, 1.12, slot.z + Math.sin(ea) * 0.42, 0.07, hex('#ff8c1a'));
+        }
         // Pot + contents: stage by stage — raw (dark) -> half (true
-        // colour) -> cooked (golden-brown).
+        // colour) -> cooked (golden-brown). The food sits IN the pot
+        // as three visible lumps, so the stage change reads at a glance.
         r.cyl(slot.x, 1.32, slot.z, 0.36, 0.42, hex('#3c3f45'));
         const c = INGREDIENTS[b.ing] ? INGREDIENTS[b.ing].color : [0.8, 0.8, 0.8];
         const p = b.progress;
         const stage = p < 0.35 ? shade(c, 0.75) : p < 0.65 ? c : lerpColor(c, [0.78, 0.52, 0.22], Math.min(1, (p - 0.65) / 0.35));
-        r.cyl(slot.x, 1.52, slot.z, 0.3, 0.06, stage);
+        r.cyl(slot.x, 1.52, slot.z, 0.3, 0.1, stage);
+        for (let l = 0; l < 3; l++) {
+          const la = (l / 3) * Math.PI * 2 + 0.5;
+          r.sph(slot.x + Math.cos(la) * 0.14, 1.6, slot.z + Math.sin(la) * 0.14, 0.13, shade(stage, 1.1));
+        }
       } else if (b.state === 'burnt') {
         r.cyl(slot.x, 1.32, slot.z, 0.36, 0.42, hex('#1a1a1a'));
         r.cyl(slot.x, 1.52, slot.z, 0.3, 0.06, hex('#0a0a0a'));
@@ -507,11 +547,25 @@ export class Scene3D {
       const p = PASSENGERS[o.passenger] || PASSENGERS.santai;
       const joy = state.passengerJoy && state.passengerJoy.spot === o.spot;
       const bob = joy ? Math.abs(Math.sin(time * 10)) * 0.18 : Math.sin(time * 2 + o.spot) * 0.03;
-      // Body capsule + head, passenger colour.
+      // Body capsule + head, passenger colour. They face the kitchen (+x).
       r.cyl(spot.x, 0.55 + bob, spot.z, 0.34, 0.9, p.color);
       r.sph(spot.x, 1.25 + bob, spot.z, 0.28, hex('#f0c08a'));
-      // Hair cap.
+      // Eyes on the kitchen-facing side of the face.
+      r.sph(spot.x + 0.22, 1.28 + bob, spot.z - 0.09, 0.04, hex('#1a1a1a'));
+      r.sph(spot.x + 0.22, 1.28 + bob, spot.z + 0.09, 0.04, hex('#1a1a1a'));
+      // Hair cap + a hat that says who they are: VIP top hat, Buru-buru
+      // a cap, Santai a headband. Passengers are people, not pawns.
       r.sph(spot.x, 1.42 + bob, spot.z, 0.26, o.passenger === 'vip' ? hex('#2a2a2a') : hex('#5a3a1a'));
+      if (o.passenger === 'vip') {
+        r.cyl(spot.x, 1.62 + bob, spot.z, 0.2, 0.3, hex('#1a1a1a'));
+        r.cyl(spot.x, 1.48 + bob, spot.z, 0.32, 0.05, hex('#1a1a1a'));
+        r.cyl(spot.x, 1.56 + bob, spot.z, 0.21, 0.05, hex('#c9a227'));
+      } else if (o.passenger === 'buru') {
+        r.cyl(spot.x, 1.58 + bob, spot.z, 0.24, 0.1, hex('#e67e22'));
+        r.box(spot.x + 0.3, 1.56 + bob, spot.z, 0.22, 0.04, 0.3, hex('#e67e22'));
+      } else {
+        r.cyl(spot.x, 1.44 + bob, spot.z, 0.27, 0.07, hex('#2f6db3'));
+      }
       // Ticket card above the head (white, tilted toward camera).
       r.box(spot.x + 0.55, 1.9 + bob, spot.z, 0.85, 0.6, 0.06, hex('#fdfdf2'));
       r.box(spot.x + 0.55, 1.9 + bob, spot.z + 0.04, 0.6, 0.12, 0.02, o.recipeColor || [0.9, 0.7, 0.3]);
@@ -530,9 +584,20 @@ export class Scene3D {
     // so the chef reads clearly at 768x480.
     r.cyl(x, 0.8 + bobY, z, 0.4, 1.05, hex('#f5f5f0'));
     const fx = Math.sin(c.facing), fz = Math.cos(c.facing);
+    // Perpendicular to facing, for the eyes / arms / pocket.
+    const px = Math.cos(c.facing), pz = -Math.sin(c.facing);
+    // Apron (blue) + pocket + two buttons + red neckerchief.
     r.box(x + fx * 0.38, 0.75 + bobY, z + fz * 0.38, 0.46, 0.6, 0.08, hex('#2f6db3'));
+    r.box(x + fx * 0.42, 0.55 + bobY, z + fz * 0.42, 0.2, 0.16, 0.04, hex('#2a5a94'));
+    r.sph(x + px * 0.1 + fx * 0.41, 0.95 + bobY, z + pz * 0.1 + fz * 0.41, 0.035, hex('#f2f2f2'));
+    r.sph(x - px * 0.1 + fx * 0.41, 0.95 + bobY, z - pz * 0.1 + fz * 0.41, 0.035, hex('#f2f2f2'));
+    r.cyl(x, 1.36 + bobY, z, 0.3, 0.1, hex('#c0392b'));
+    // Head + eyes + tall chef hat with a blue band.
     r.sph(x, 1.62 + bobY, z, 0.32, hex('#f0c08a'));
+    r.sph(x + fx * 0.26 + px * 0.11, 1.66 + bobY, z + fz * 0.26 + pz * 0.11, 0.045, hex('#1a1a1a'));
+    r.sph(x + fx * 0.26 - px * 0.11, 1.66 + bobY, z + fz * 0.26 - pz * 0.11, 0.045, hex('#1a1a1a'));
     r.cyl(x, 1.92 + bobY, z, 0.34, 0.24, hex('#ffffff'));
+    r.cyl(x, 1.82 + bobY, z, 0.35, 0.08, hex('#2f6db3'));
     r.box(x, 2.1 + bobY, z, 0.48, 0.2, 0.48, hex('#ffffff'));
     // Boots when the shoes upgrade is bought (tier 1 brown, tier 2+ red,
     // tier 3 with gold trim) — the upgrade reads on the chef himself.
@@ -546,17 +611,18 @@ export class Scene3D {
         r.box(x + 0.16, 0.26 + bobY, z + fz * 0.12, 0.24, 0.05, 0.36, hex('#c9a227'));
       }
     }
-    // Arms reaching toward facing direction.
-    r.box(x + fx * 0.36, 1.08 + bobY, z + fz * 0.36, 0.18, 0.18, 0.44, hex('#e8e8e0'));
+    // Two arms reaching toward the facing direction.
+    r.box(x + fx * 0.36 + px * 0.2, 1.08 + bobY, z + fz * 0.36 + pz * 0.2, 0.16, 0.16, 0.44, hex('#e8e8e0'));
+    r.box(x + fx * 0.36 - px * 0.2, 1.08 + bobY, z + fz * 0.36 - pz * 0.2, 0.16, 0.16, 0.44, hex('#e8e8e0'));
     // Carried items float above the hands.
     c.hands.forEach((item, i) => {
       if (!item) return;
       const col = INGREDIENTS[item.ing] ? INGREDIENTS[item.ing].color : [0.8, 0.8, 0.8];
       const off = i === 0 ? -0.24 : 0.24;
-      const px = x + fx * 0.5 + Math.cos(c.facing) * off;
-      const pz = z + fz * 0.5 - Math.sin(c.facing) * off;
+      const px2 = x + fx * 0.5 + Math.cos(c.facing) * off;
+      const pz2 = z + fz * 0.5 - Math.sin(c.facing) * off;
       const done = item.chopped || item.cooked;
-      r.box(px, 1.35 + bobY, pz, 0.32, done ? 0.22 : 0.32, 0.32, done ? shade(col, 1.25) : col);
+      r.box(px2, 1.35 + bobY, pz2, 0.32, done ? 0.22 : 0.32, 0.32, done ? shade(col, 1.25) : col);
     });
   }
 
@@ -577,9 +643,14 @@ export class Scene3D {
     for (const w of state.waiters || []) {
       const bobY = w.moving ? Math.abs(Math.sin(w.bob)) * 0.06 : 0;
       const fx = Math.sin(w.facing), fz = Math.cos(w.facing);
+      const px = Math.cos(w.facing), pz = -Math.sin(w.facing);
       r.cyl(w.x, 0.75 + bobY, w.z, 0.36, 0.95, hex('#7b2d26'));
       r.box(w.x + fx * 0.34, 0.7 + bobY, w.z + fz * 0.34, 0.42, 0.55, 0.08, hex('#f5ead0'));
+      // Bow tie + eyes, so the waiter reads as a person mid-route.
+      r.box(w.x + fx * 0.38, 1.28 + bobY, w.z + fz * 0.38, 0.16, 0.07, 0.05, hex('#1a1a1a'));
       r.sph(w.x, 1.5 + bobY, w.z, 0.28, hex('#e8b88a'));
+      r.sph(w.x + fx * 0.22 + px * 0.1, 1.54 + bobY, w.z + fz * 0.22 + pz * 0.1, 0.04, hex('#1a1a1a'));
+      r.sph(w.x + fx * 0.22 - px * 0.1, 1.54 + bobY, w.z + fz * 0.22 - pz * 0.1, 0.04, hex('#1a1a1a'));
       r.cyl(w.x, 1.72 + bobY, w.z, 0.3, 0.08, hex('#2a2a2a'));
       if (w.carrying) {
         r.cyl(w.x + fx * 0.5, 1.15 + bobY, w.z + fz * 0.5, 0.4, 0.05, hex('#c9a227'));

@@ -7,7 +7,7 @@ import { Scene3D, makeViewProjection, projectToScreen, CAMERA } from './render3d
 import { INGREDIENTS, RECIPES, recipeById, unlockedRecipes, unlockedIngredients, nextPrepStep } from './recipes.js';
 import { LEVELS, levelDef, starsFor } from './levels.js';
 import { UPGRADES, effectiveStats, canBuy, tierUnlockLevel } from './upgrades.js';
-import { PASSENGERS, makeOrder, tickOrders, servePayout, patienceFrac, patienceColor } from './orders.js';
+import { PASSENGERS, makeOrder, tickOrders, servePayout, patienceFrac, patienceColor, departureTime } from './orders.js';
 import { makeCountdown, tickCountdown, fmtTime, makeAction, tickAction, actionFrac, PERFECT_LOW, PERFECT_HIGH } from './timer.js';
 import { STATIONS, PASSENGER_SPOTS, stationById, nearestStation, clampFloor, burnerSlots, plateSlots } from './stations.js';
 import { makeChef, moveChef, giveItem, takeItem, findCarried, freeHand, handCount } from './chef.js';
@@ -676,12 +676,14 @@ function drawWorldBars() {
     const col = b.state === 'burnt' ? '#333' : (b.progress >= PERFECT_LOW ? '#7dff8a' : '#ffb347');
     hctx.fillStyle = col;
     rr(px - w / 2, py, Math.max(10, w * Math.min(1, b.progress)), 10, 5); hctx.fill();
-    // Labels staggered vertically per burner so two pots never overlap.
-    const labelY = py - 14 - i * 24;
+    // Ring + label stacked vertically per burner, so two pots' rings
+    // and labels never sit on each other (round 2 fix: PERFECT! and
+    // Matang! used to share one ring height).
+    const ringY = py - 34 - i * 30;
+    const labelY = py - 14 - i * 30;
     if (b.state === 'burnt') text('GOSONG!', px, labelY, 13, '#ff6a6a', 'center', true);
     else if (b.progress >= PERFECT_LOW) text(b.progress >= PERFECT_LOW && b.progress <= PERFECT_HIGH ? 'PERFECT!' : 'Matang!', px, labelY, 13, '#7dff8a', 'center', true);
     // Progress ring: raw -> half -> cooked, green arc = perfect zone.
-    const ringY = py - 34;
     hctx.lineWidth = 5;
     hctx.strokeStyle = 'rgba(255,255,255,0.25)';
     hctx.beginPath(); hctx.arc(px, ringY, 14, 0, Math.PI * 2); hctx.stroke();
@@ -714,11 +716,12 @@ function drawWorldBars() {
       text(assembling.recipeName + '  ' + done + '/' + assembling.components.length, px, py, 14, '#ffd700', 'center', true);
     }
   }
-  // Passenger joy after eating.
+  // Passenger joy after eating (high above the ticket, so it never
+  // lands on a neighbour's label).
   if (S.passengerJoy) {
     const spot = PASSENGER_SPOTS[S.passengerJoy.spot];
     if (spot) {
-      const [px, py, behind] = projectToScreen(vp, spot.x + 0.55, 2.9, spot.z, W, H);
+      const [px, py, behind] = projectToScreen(vp, spot.x + 0.55, 3.4, spot.z, W, H);
       if (!behind) text('😋 Yum!', px, py, 20, '#7dff8a', 'center', true);
     }
   }
@@ -727,6 +730,8 @@ function drawWorldBars() {
   // (No "⚡ EXPRESS" text here: the gold box on the 3D ticket and the
   // top ticket already say it — the text only collided with the next
   // passenger's label.)
+  // Round 2: neighbouring labels are staggered (alternate x offset and
+  // a small y lift) so three passengers' pills never crowd each other.
   const waiting = S.orders.filter((o) => o.state === 'waiting');
   for (const o of waiting) {
     const spot = PASSENGER_SPOTS[o.spot];
@@ -735,18 +740,42 @@ function drawWorldBars() {
     if (behind) continue;
     const pc = patienceColor(o);
     const css = 'rgb(' + Math.round(pc[0] * 255) + ',' + Math.round(pc[1] * 255) + ',' + Math.round(pc[2] * 255) + ')';
+    const lx = px + (o.spot % 2 === 0 ? -16 : 16);
+    const ly = py - (o.spot % 2 === 0 ? 0 : 9);
     hctx.fillStyle = 'rgba(10,10,16,0.75)';
     const tw = 84;
-    rr(px - tw / 2, py - 26, tw, 18, 9); hctx.fill();
-    bar(px - 42, py, 84, 9, patienceFrac(o), css);
-    text(o.recipeName, px, py - 17, 12, '#fff', 'center', true);
+    rr(lx - tw / 2, ly - 26, tw, 18, 9); hctx.fill();
+    bar(lx - 42, ly, 84, 9, patienceFrac(o), css);
+    text(o.recipeName, lx, ly - 17, 12, '#fff', 'center', true);
   }
-  // Nearest station hint (drawn below the station so it never covers
-  // pot labels or coin floaters above it).
+  // Departure board text (2D overlay on the 3D board): train number +
+  // departure time + dish per waiting order, so the board reads as a
+  // real departure board — not just glowing bars. Dim rows below show
+  // the next trains. (No header line: it crossed the top order ticket.
+  // Rows sit low on the board, clear of the tickets.)
+  const boardOrders = S.orders.filter((o) => o.state === 'waiting').slice(0, 4);
+  for (let i = 0; i < 4; i++) {
+    const y = 3.55 - i * 0.32;
+    const [bx, by, bBehind] = projectToScreen(vp, -2.35, y, -4.3, W, H);
+    if (bBehind) continue;
+    if (i < boardOrders.length) {
+      const o = boardOrders[i];
+      text(o.train + '  ' + departureTime(i) + '  ·  ' + o.recipeName, bx, by + 4, 12, o.express ? '#ffd700' : '#f0f0f0', 'left', true);
+    } else {
+      text('KA-' + (801 + i * 7) + '  ' + departureTime(i), bx, by + 4, 12, '#5a6270', 'left', true);
+    }
+  }
+  // Nearest station hint (drawn below the station, with a dark pill
+  // behind it, so it never covers pot labels or coin floaters above it).
   const st = nearestReachable();
   if (st && !S.action && !S.pantryOpen) {
     const [px, py, behind] = projectToScreen(vp, st.x, 2.0, st.z, W, H);
-    if (!behind) text(st.hint, px, py + 46, 14, '#ffd700', 'center', true);
+    if (!behind) {
+      const hw = st.hint.length * 8.5 + 18;
+      hctx.fillStyle = 'rgba(10,10,16,0.75)';
+      rr(px - hw / 2, py + 54, hw, 22, 11); hctx.fill();
+      text(st.hint, px, py + 70, 14, '#ffd700', 'center', true);
+    }
   }
   // Floaters.
   for (const f of S.floaters) {
@@ -893,7 +922,7 @@ function drawAnnotations() {
   // Cover annotations: legend + leader lines to the six criterion-1 elements.
   const items = [
     { label: '1. Dapur 3D', at: [0, 1.2, -3.2] },
-    { label: '2. Order board', at: [0, 3.3, -4.4] },
+    { label: '2. Order board', at: [-4.0, 3.3, -4.4] }, // left edge of the board: the row text (train + time + dish) starts at x -2.35
     { label: '3. Bahan di counter', at: [-2.7, 1.6, -3.2] }, // chopping board (was the pantry: it sat on top of the spot-0 passenger label)
     { label: '4. Hidangan mid-assembly', at: [3.0, 1.6, -3.2] },
     { label: '5. Timer & patience', at: [-5.3, 1.35, -1.6] },
@@ -974,16 +1003,38 @@ function applyScene(name) {
     // standing at the counter; the flight is frozen, see below.
     const vipSpot = PASSENGER_SPOTS[S.orders[2].spot];
     S.serveAnim = { t: 0.675, dur: 0.9, dish: { recipeId: 'signal-sandwich', recipeName: 'Signal Sandwich', color: recipeById('signal-sandwich').color, perfect: true }, order: S.orders[2], from: { x: 5.6, z: -2.0 }, to: { x: vipSpot.x, z: vipSpot.z } };
-    // (No passengerJoy here: the "😋 Yum!" text landed on top of the
-    // Signal Sandwich label. The flying plate + the ticket tell the
-    // serve story on their own.)
+    // (Round 2: passengerJoy IS back — the staggered passenger labels
+    // leave room for the "😋 Yum!" above the VIP's ticket, and the
+    // jumping passenger is part of the unmissable serve moment.)
     // Show the upgrade system on the stations: 3 burners, gold window
-    // trim, boots, tier pips — plus a waiter standing by the window.
-    // (The ready plate is express-fries, which no waiting order wants,
-    // so the waiter stays at his post instead of walking off mid-shot.)
+    // trim, boots, tier pips — plus the waiter MID-ROUTE with a tray:
+    // he is walking from the serving window toward the VIP passenger's
+    // counter (not standing at his post), so the judge sees the
+    // Pelayan upgrade in the cover without opening the shop.
     S.upgrades = { knife: 2, stove: 3, plating: 2, window: 2, shoes: 1, pantry: 1, quality: 1, warming: 1, waiter: 1 };
     syncStats(); syncBurners(); syncWaiters();
+    const w0 = S.waiters[0];
+    if (w0) {
+      w0.x = 0.8; w0.z = 0.6;
+      w0.facing = Math.atan2(-6.0 - 0.8, 1.2 - 0.6);
+      w0.moving = true; w0.bob = 0.4;
+      w0.carrying = { recipeId: 'signal-sandwich', recipeName: 'Signal Sandwich', color: recipeById('signal-sandwich').color };
+      w0.order = S.orders[2];
+    }
     S.warmingItems.push({ ing: 'patty', chopped: false, cooked: true, perfect: true });
+    // The VIP passenger jumps with joy as the plate flies in — the
+    // serve lands where they waited, and it cannot be missed: the big
+    // flying plate (gold trail) + PERFECT! + +18 koin floaters right at
+    // the plate, on top of the passenger's own "😋 Yum!".
+    S.passengerJoy = { spot: S.orders[2].spot, t: 99 };
+    const plateX = 5.6 + (vipSpot.x - 5.6) * 0.675;
+    const plateZ = -2.0 + (vipSpot.z + 2.0) * 0.675;
+    const plateY = 1.2 + Math.sin(0.675 * Math.PI) * 1.4;
+    const [fpx, fpy, fBehind] = projectToScreen(vp, plateX, plateY, plateZ, W, H);
+    if (!fBehind) {
+      S.floaters.push({ x: fpx, y: fpy - 46, text: 'PERFECT!', color: '#7dff8a', life: 99 });
+      S.floaters.push({ x: fpx, y: fpy + 50, text: '+18 koin', color: '#ffd700', life: 99 });
+    }
     // Staged steam over the pots + sparkles around the flying plate
     // (frozen scene: particles stay put and read as steam/shine).
     for (let i = 0; i < 4; i++) {

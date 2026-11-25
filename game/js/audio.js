@@ -6,8 +6,8 @@
 // play A+A (gentler); level 3-4 play A+B; level 5 (Rush Hour) plays
 // A+B an octave up, and a faster tempo. 0 = rest (a breath at the end
 // of each phrase). Pure note data — no audio files, no AudioContext.
-const MELODY_A = [262, 330, 392, 330, 294, 370, 440, 370, 330, 392, 440, 392, 330, 294, 262, 0];
-const MELODY_B = [294, 370, 440, 523, 440, 370, 392, 330, 294, 330, 392, 440, 523, 440, 392, 0];
+const MELODY_A = [262, 330, 392, 330, 294, 349, 440, 349, 330, 392, 440, 392, 330, 294, 262, 0];
+const MELODY_B = [294, 349, 440, 523, 440, 349, 392, 330, 294, 330, 392, 440, 523, 440, 392, 0];
 // One bass root per 8-step bar: C - G - Am - F.
 const BASS_ROOTS = [131, 98, 110, 87];
 export function musicMelody(level) {

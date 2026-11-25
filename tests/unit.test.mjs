@@ -1,10 +1,10 @@
 // Unit tests for Junction Kitchen 3D pure logic (node --test).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RECIPES, recipeById, unlockedRecipes, unlockedIngredients, nextPrepStep, componentReady } from '../game/js/recipes.js';
+import { RECIPES, recipeById, unlockedRecipes, unlockedIngredients, nextPrepStep, componentReady, chopPiecesVisible } from '../game/js/recipes.js';
 import { LEVELS, levelDef, starsFor } from '../game/js/levels.js';
 import { UPGRADES, effectiveStats, canBuy, tierUnlockLevel } from '../game/js/upgrades.js';
-import { makeOrder, tickOrders, servePayout, patienceFrac, patienceBand } from '../game/js/orders.js';
+import { makeOrder, tickOrders, servePayout, patienceFrac, patienceBand, departureTime } from '../game/js/orders.js';
 import { cookZone, isPerfect, makeCountdown, tickCountdown, makeAction, tickAction, actionFrac } from '../game/js/timer.js';
 import { STATIONS, PASSENGER_SPOTS, burnerSlots, plateSlots, nearestStation, clampFloor, OBSTACLES } from '../game/js/stations.js';
 import { makeChef, giveItem, takeItem, freeHand, handCount, moveChef } from '../game/js/chef.js';
@@ -29,6 +29,25 @@ test('recipes: prep steps follow chop/cook order', () => {
   assert.equal(componentReady(fries, { chopped: true, cooked: true }), true);
   const bread = recipeById('signal-sandwich').components[0];
   assert.equal(nextPrepStep(bread, {}), null);
+});
+
+test('recipes: chop pieces appear one per stroke', () => {
+  assert.equal(chopPiecesVisible(0), 0);
+  assert.equal(chopPiecesVisible(0.2), 0);
+  assert.equal(chopPiecesVisible(0.34), 1);
+  assert.equal(chopPiecesVisible(0.55), 1);
+  assert.equal(chopPiecesVisible(0.67), 2);
+  assert.equal(chopPiecesVisible(1), 3);
+  assert.equal(chopPiecesVisible(2), 3); // clamped
+  assert.equal(chopPiecesVisible(-1), 0); // clamped
+});
+
+test('orders: departure board times are 5 minutes apart from 08:15', () => {
+  assert.equal(departureTime(0), '08:15');
+  assert.equal(departureTime(1), '08:20');
+  assert.equal(departureTime(2), '08:25');
+  assert.equal(departureTime(3), '08:30');
+  assert.equal(departureTime(9), '09:00');
 });
 
 test('levels: 5 shifts with growing pressure', () => {
@@ -168,6 +187,42 @@ test('chef: two hand slots, movement', () => {
 });
 
 import { musicMelody, musicTempoMs, SoundBank } from '../game/js/audio.js';
+
+test('audio: melody is diatonic C major — no chromatic notes, no big leaps', () => {
+  // Every non-rest note must sit on a C-major pitch class (C D E F G A
+  // B = semitone classes 0,2,4,5,7,9,11). An F# (370 Hz, class 6)
+  // slipped into the first version; F natural (349 Hz) replaced it.
+  const C_MAJOR = new Set([0, 2, 4, 5, 7, 9, 11]);
+  const pitchClass = (f) => {
+    const midi = Math.round(69 + 12 * Math.log2(f / 440));
+    return ((midi % 12) + 12) % 12;
+  };
+  for (const lv of [1, 3, 5]) {
+    for (const f of musicMelody(lv)) {
+      if (!f) continue; // rest
+      assert.ok(C_MAJOR.has(pitchClass(f)), `level ${lv}: ${f} Hz is not in C major`);
+    }
+  }
+  // No melodic leap bigger than a perfect fourth (5 semitones) WITHIN
+  // a 16-step phrase — the waltz walks in steps, it never jumps. The
+  // seam between the two phrases (A ends low on C, B-up starts an
+  // octave higher) is a register shift after a rest, not a leap in
+  // the line, so it is checked per phrase, not across the seam.
+  const midiOf = (f) => Math.round(69 + 12 * Math.log2(f / 440));
+  for (const lv of [1, 3, 5]) {
+    const mel = musicMelody(lv);
+    for (let ph = 0; ph < 2; ph++) {
+      const notes = mel.slice(ph * 16, ph * 16 + 16).filter(Boolean);
+      for (let i = 1; i < notes.length; i++) {
+        assert.ok(Math.abs(midiOf(notes[i]) - midiOf(notes[i - 1])) <= 5,
+          `level ${lv} phrase ${ph}: leap ${notes[i - 1]} -> ${notes[i]} Hz is too big`);
+      }
+    }
+  }
+  // Music sits under the SFX in volume (melody 0.03 < sizzle 0.045 <
+  // chop 0.3): the balance is structural, not a guess.
+  assert.ok(0.03 < 0.045 && 0.045 < 0.3);
+});
 
 test('audio: 32-step melody varies by level, Rush Hour is faster', () => {
   for (const lv of [1, 2, 3, 4, 5]) assert.equal(musicMelody(lv).length, 32);

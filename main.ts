@@ -33,6 +33,11 @@ function checkGate() {
   const indexHtml = join(repoRoot, 'game', 'index.html');
   if (!existsSync(indexHtml)) fail('game/index.html missing');
   if (statSync(indexHtml).size > 1048576) fail('game/index.html over 1 MiB');
+  // The intended set: 1-cover.jpg is the cover the judge sees first,
+  // 4-shop.jpg is the upgrade shop open (round 2 staging). A missing
+  // cover or shop frame means the wrong shots were handed in.
+  if (!shots.includes('1-cover.jpg')) fail('screenshots/1-cover.jpg missing');
+  if (!shots.includes('4-shop.jpg')) fail('screenshots/4-shop.jpg missing');
   let files = 0;
   (function walk(dir) {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
